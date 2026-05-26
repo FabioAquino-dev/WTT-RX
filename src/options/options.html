@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self'; script-src 'self'">
+  <title>WTT-RX — Configurações</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="options">
+
+    <header class="options__header">
+      <h1>WTT-RX <span class="header__sub">Configurações</span></h1>
+    </header>
+
+    <form class="options__form" id="js-form" novalidate>
+
+      <fieldset class="fieldset">
+        <legend class="fieldset__legend">Comportamento da automação</legend>
+
+        <div class="field">
+          <label class="field__label" for="retryMaxAttempts">Tentativas por item</label>
+          <p class="field__hint">Quantas vezes tentar cada ação antes de desistir.</p>
+          <input class="field__input" type="number"
+                 id="retryMaxAttempts" name="retryMaxAttempts"
+                 min="1" max="10" value="3">
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="retryDelayMs">Delay entre tentativas (ms)</label>
+          <p class="field__hint">Tempo de espera antes de cada nova tentativa. Multiplicado pelo número da tentativa.</p>
+          <input class="field__input" type="number"
+                 id="retryDelayMs" name="retryDelayMs"
+                 min="500" max="10000" step="100" value="1500">
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="actionDelayMs">Delay entre ações (ms)</label>
+          <p class="field__hint">Pausa entre cada item processado da fila.</p>
+          <input class="field__input" type="number"
+                 id="actionDelayMs" name="actionDelayMs"
+                 min="300" max="5000" step="100" value="800">
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="observerDebounceMs">Debounce do observer (ms)</label>
+          <p class="field__hint">Janela de espera antes de processar mudanças no DOM.</p>
+          <input class="field__input" type="number"
+                 id="observerDebounceMs" name="observerDebounceMs"
+                 min="100" max="3000" step="50" value="500">
+        </div>
+      </fieldset>
+
+      <fieldset class="fieldset">
+        <legend class="fieldset__legend">Inicialização</legend>
+
+        <div class="field field--row">
+          <input class="field__checkbox" type="checkbox"
+                 id="autoStart" name="autoStart">
+          <div>
+            <label class="field__label" for="autoStart">Iniciar automaticamente</label>
+            <p class="field__hint">Iniciar automação ao abrir a página do sistema.</p>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset class="fieldset">
+        <legend class="fieldset__legend">Debug</legend>
+
+        <div class="field field--row">
+          <input class="field__checkbox" type="checkbox"
+                 id="debugMode" name="debugMode" checked>
+          <div>
+            <label class="field__label" for="debugMode">Modo debug</label>
+            <p class="field__hint">Ativa logs detalhados no Console do navegador. Desative em uso estável.</p>
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="options__actions">
+        <button class="btn btn--primary" type="submit" id="js-btn-save">
+          Salvar configurações
+        </button>
+        <button class="btn btn--secondary" type="button" id="js-btn-reset">
+          Restaurar padrões
+        </button>
+        <span class="feedback" id="js-feedback" role="status" aria-live="polite"></span>
+      </div>
+
+    </form>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>
