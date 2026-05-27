@@ -237,12 +237,28 @@ function parseStudiesHTML(html) {
 }
 
 function parseUnrecPrintsHTML(html) {
-  return parseTableRows(html).map(row => ({
-    cells:        row.cells,
-    getStdPrints: row.onclick.getStdPrints ?? null,
-    associate:    row.onclick.associate    ?? null,
-    _rawOnclick:  Object.keys(row.onclick).length ? row.onclick : undefined,
-  }));
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const items = doc.querySelectorAll('.unrec-item');
+  if (!items.length) return [];
+
+  const t = (el, sel) => el.querySelector(sel)?.textContent.trim() || null;
+
+  return Array.from(items).map(item => {
+    const id        = item.id || null;
+    const statusEl  = item.querySelector('.unrec-item-status');
+    const statusClass = statusEl
+      ? Array.from(statusEl.classList).filter(c => c !== 'unrec-item-status').join(' ') || null
+      : null;
+
+    return {
+      id,
+      studyUid:   id ? id.replace(/^STUDY_/, '') : null,
+      aetitle:    t(item, '.unrec-item-aetitle'),
+      datetime:   t(item, '.unrec-item-datetime'),
+      statusClass,
+      onclick:    item.getAttribute('onclick') || item.getAttribute('onClick') || null,
+    };
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -480,6 +496,58 @@ const PANEL_CSS = `<style>
 .study-card__status.status-empty   { background: #21262d; color: #8b949e; }
 .study-card__status.status-toaprov { background: #1a3a2a; color: #3fb950; }
 
+/* ── Unrec cards ── */
+.section-label--unrec { color: #d29922; }
+
+.unrec-card {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  padding: 5px 7px;
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.unrec-card:hover {
+  border-color: #d29922;
+  background: #1c1a0e;
+}
+.unrec-card--active {
+  border-color: #d29922;
+  background: #1c1a0e;
+  box-shadow: 0 0 0 1px #d2992222;
+}
+
+.unrec-card__aetitle {
+  font-size: 11px;
+  font-weight: 600;
+  color: #c9d1d9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.unrec-card__datetime {
+  font-size: 10px;
+  color: #8b949e;
+  flex-shrink: 0;
+}
+
+.unrec-card__status {
+  display: inline-block;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 10px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.unrec-card__status.status-unrec { background: #2d1f0e; color: #d29922; }
+
 /* ── Group config row ── */
 .group-row {
   display: flex;
@@ -535,6 +603,10 @@ const PANEL_HTML = `
       <div class="section-label">Exames (<span id="wttrx-studies-count">0</span>)</div>
       <div class="studies-scroll" id="wttrx-studies-list"></div>
     </div>
+    <div id="wttrx-unrec-wrap" style="display:none;">
+      <div class="section-label section-label--unrec">Não reconhecidos (<span id="wttrx-unrec-count">0</span>)</div>
+      <div class="studies-scroll" id="wttrx-unrec-list"></div>
+    </div>
     <div class="log-box">
       <p class="log-empty" id="wttrx-log-empty">Nenhuma atividade ainda.</p>
       <ul class="log-list" id="wttrx-log-list" style="display:none;"></ul>
@@ -580,6 +652,9 @@ function createPanel() {
       studiesWrap:   shadow.querySelector('#wttrx-studies-wrap'),
       studiesList:   shadow.querySelector('#wttrx-studies-list'),
       studiesCount:  shadow.querySelector('#wttrx-studies-count'),
+      unrecWrap:     shadow.querySelector('#wttrx-unrec-wrap'),
+      unrecList:     shadow.querySelector('#wttrx-unrec-list'),
+      unrecCount:    shadow.querySelector('#wttrx-unrec-count'),
       groupInput:    shadow.querySelector('#wttrx-group-input'),
     },
   };
@@ -742,6 +817,57 @@ function renderStudies(studies) {
   });
 }
 
+function renderUnrec(items) {
+  if (!_panel) return;
+  const { unrecWrap, unrecList, unrecCount } = _panel.refs;
+
+  unrecList.innerHTML = '';
+
+  if (!items.length) {
+    unrecWrap.style.display = 'none';
+    return;
+  }
+
+  unrecCount.textContent = items.length;
+  unrecWrap.style.display = '';
+
+  items.forEach(u => {
+    const card = document.createElement('div');
+    card.className = 'unrec-card';
+
+    const aetitle = document.createElement('div');
+    aetitle.className = 'unrec-card__aetitle';
+    aetitle.textContent = u.aetitle || u.studyUid || '—';
+
+    const dt = document.createElement('div');
+    dt.className = 'unrec-card__datetime';
+    dt.textContent = u.datetime || '';
+
+    card.appendChild(aetitle);
+    card.appendChild(dt);
+
+    if (u.statusClass) {
+      const badge = document.createElement('span');
+      badge.className = `unrec-card__status ${u.statusClass}`;
+      badge.textContent = 'N/R';
+      card.appendChild(badge);
+    }
+
+    if (u.onclick) {
+      card.addEventListener('click', () => {
+        unrecList.querySelectorAll('.unrec-card--active')
+          .forEach(c => c.classList.remove('unrec-card--active'));
+        card.classList.add('unrec-card--active');
+
+        executeInPageContext(u.onclick);
+        addLog(`Abrindo não reconhecido: ${u.aetitle || '?'} - ${u.datetime || '?'}`);
+      });
+    }
+
+    unrecList.appendChild(card);
+  });
+}
+
 function _setActionButtonsDisabled(disabled) {
   if (!_panel) return;
   _panel.shadow.querySelectorAll('.pbtn').forEach(b => { b.disabled = disabled; });
@@ -830,16 +956,17 @@ async function handleReadUnrec() {
     };
     _panel.refs.btnExport.disabled = false;
 
-    addLog(`group=${ctx.group ?? '(nulo)'} filter=${ctx.stdfilter ?? '(nulo)'}`, 'warn');
+    const rawCount = (result.html.match(/class="[^"]*unrec-item/g) || []).length;
+    addLog(`.unrec-item no HTML: ${rawCount}`, rawCount ? 'success' : 'warn');
 
     if (!items.length) {
-      addLog('Nenhum exame não reconhecido.', 'warn');
+      addLog('Nenhum não reconhecido encontrado.', 'warn');
+      renderUnrec([]);
     } else {
-      addLog(`${items.length} item(ns) não reconhecido(s).`, 'success');
-      items.slice(0, 5).forEach((item, i) => {
-        addLog(`  #${i + 1}: ${item.cells.filter(Boolean).slice(0, 3).join(' | ')}`);
-      });
-      if (items.length > 5) addLog(`  … e mais ${items.length - 5}`);
+      const first = items[0];
+      addLog(`#1 → ${first.aetitle || '?'} - ${first.datetime || '?'}`);
+      renderUnrec(items);
+      addLog(`${items.length} não reconhecido(s) renderizado(s).`, 'success');
     }
     updateStatus('ativo', 'Ativo');
   } catch (err) {
