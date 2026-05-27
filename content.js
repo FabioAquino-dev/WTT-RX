@@ -176,53 +176,30 @@ function parseTableRows(html) {
 
 function parseStudiesHTML(html) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
+  const items = doc.querySelectorAll('.study-item');
+  if (!items.length) return [];
 
-  // Tenta .study-item primeiro (formato confirmado pelo cURL)
-  const studyItems = doc.querySelectorAll('.study-item');
-  if (studyItems.length) {
-    return Array.from(studyItems).map(item => {
-      const onclick = {};
-      [item, ...item.querySelectorAll('[onclick]')].forEach(node => {
-        const oc = node.getAttribute('onclick');
-        if (!oc) return;
-        const fn = oc.match(/^([a-zA-Z_]\w*)\s*\(/)?.[1];
-        if (fn) onclick[fn] = extractOnclickArgs(oc);
-      });
-      const cells = Array.from(item.querySelectorAll('td, [class^="col"], span[class], div[class]'))
-        .map(el => el.textContent.trim()).filter(Boolean);
-      const text = cells.length ? cells : [item.textContent.trim()];
-      const [patientId, patientName, studyId, modality, studyDescription, accessionNumber, status, ...extra] = text;
-      return {
-        patientId:        patientId        ?? null,
-        patientName:      patientName      ?? null,
-        studyId:          studyId          ?? null,
-        modality:         modality         ?? null,
-        studyDescription: studyDescription ?? null,
-        accessionNumber:  accessionNumber  ?? null,
-        status:           status           ?? null,
-        getStdPrints:     onclick.getStdPrints ?? null,
-        associate:        onclick.associate    ?? null,
-        _extra:           extra.length ? extra : undefined,
-        _rawCells:        text,
-      };
-    });
-  }
+  const text = (el, sel) => el.querySelector(sel)?.textContent.trim() || null;
+  const data = (el, key) => el.dataset[key] || el.dataset[key.toLowerCase()] || null;
 
-  // Fallback: linhas de tabela (<tr>/<td>)
-  return parseTableRows(html).map(row => {
-    const [patientId, patientName, studyId, modality, studyDescription, accessionNumber, status, ...extra] = row.cells;
+  return Array.from(items).map(item => {
+    const statusClass = Array.from(item.classList)
+      .filter(c => c !== 'study-item').join(' ') || null;
+
+    const onclickRaw = item.getAttribute('onclick') ||
+      item.querySelector('[onclick]')?.getAttribute('onclick') || null;
+
     return {
-      patientId:        patientId        ?? null,
-      patientName:      patientName      ?? null,
-      studyId:          studyId          ?? null,
-      modality:         modality         ?? null,
-      studyDescription: studyDescription ?? null,
-      accessionNumber:  accessionNumber  ?? null,
-      status:           status           ?? null,
-      getStdPrints:     row.onclick.getStdPrints ?? null,
-      associate:        row.onclick.associate    ?? null,
-      _extra:           extra.length ? extra : undefined,
-      _rawCells:        row.cells,
+      patientId:       data(item,'patientId')       || text(item, '.patient-id, [class*="patient-id"]'),
+      patientName:     data(item,'patientName')      || text(item, '.patient-name, [class*="patient-name"]') || item.getAttribute('title'),
+      datetime:        data(item,'datetime')         || text(item, '.datetime, .date, [class*="date"]'),
+      modality:        data(item,'modality')         || text(item, '.modality, [class*="modality"]'),
+      description:     data(item,'description')      || text(item, '.description, .study-desc, [class*="desc"]'),
+      accessionNumber: data(item,'accessionNumber')  || text(item, '.accession, [class*="accession"]'),
+      statusClass,
+      onclick:         onclickRaw,
+      title:           item.getAttribute('title'),
+      _rawHtml:        item.outerHTML,
     };
   });
 }
@@ -396,6 +373,61 @@ const PANEL_CSS = `<style>
 .log-entry--success { color: #3fb950; }
 .log-entry--error   { color: #f85149; }
 .log-entry--warn    { color: #d29922; }
+
+/* ── Studies list ── */
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #484f58;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 4px;
+}
+
+.studies-scroll {
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.study-card {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  padding: 5px 7px;
+  cursor: default;
+}
+.study-card:hover { border-color: #30363d; }
+
+.study-card__name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #c9d1d9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.study-card__meta {
+  font-size: 10px;
+  color: #8b949e;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.study-card__status {
+  display: inline-block;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #21262d;
+  color: #8b949e;
+  margin-top: 2px;
+}
 </style>`;
 
 // ── Panel HTML ─────────────────────────────────────────────────────────────────
@@ -415,6 +447,10 @@ const PANEL_HTML = `
       <button class="pbtn pbtn--primary"   id="wttrx-btn-studies">Ler exames reconhecidos</button>
       <button class="pbtn pbtn--secondary" id="wttrx-btn-unrec"  >Ler não reconhecidos</button>
       <button class="pbtn pbtn--ghost"     id="wttrx-btn-export"  disabled>Exportar diagnóstico</button>
+    </div>
+    <div id="wttrx-studies-wrap" style="display:none;">
+      <div class="section-label">Exames (<span id="wttrx-studies-count">0</span>)</div>
+      <div class="studies-scroll" id="wttrx-studies-list"></div>
     </div>
     <div class="log-box">
       <p class="log-empty" id="wttrx-log-empty">Nenhuma atividade ainda.</p>
@@ -442,13 +478,16 @@ function createPanel() {
     minimized: false,
     lastData:  null,
     refs: {
-      body:      shadow.querySelector('#wttrx-body'),
-      sdot:      shadow.querySelector('#wttrx-sdot'),
-      slabel:    shadow.querySelector('#wttrx-slabel'),
-      logEmpty:  shadow.querySelector('#wttrx-log-empty'),
-      logList:   shadow.querySelector('#wttrx-log-list'),
-      btnMin:    shadow.querySelector('#wttrx-min'),
-      btnExport: shadow.querySelector('#wttrx-btn-export'),
+      body:          shadow.querySelector('#wttrx-body'),
+      sdot:          shadow.querySelector('#wttrx-sdot'),
+      slabel:        shadow.querySelector('#wttrx-slabel'),
+      logEmpty:      shadow.querySelector('#wttrx-log-empty'),
+      logList:       shadow.querySelector('#wttrx-log-list'),
+      btnMin:        shadow.querySelector('#wttrx-min'),
+      btnExport:     shadow.querySelector('#wttrx-btn-export'),
+      studiesWrap:   shadow.querySelector('#wttrx-studies-wrap'),
+      studiesList:   shadow.querySelector('#wttrx-studies-list'),
+      studiesCount:  shadow.querySelector('#wttrx-studies-count'),
     },
   };
 
@@ -543,6 +582,47 @@ function makeDraggable(host, handle) {
 
 // ── Panel action handlers ──────────────────────────────────────────────────────
 
+function renderStudies(studies) {
+  if (!_panel) return;
+  const { studiesWrap, studiesList, studiesCount } = _panel.refs;
+
+  studiesList.innerHTML = '';
+
+  if (!studies.length) {
+    studiesWrap.style.display = 'none';
+    return;
+  }
+
+  studiesCount.textContent = studies.length;
+  studiesWrap.style.display = '';
+
+  studies.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'study-card';
+
+    const name = document.createElement('div');
+    name.className = 'study-card__name';
+    name.textContent = s.patientName || s.title || '—';
+
+    const meta = document.createElement('div');
+    meta.className = 'study-card__meta';
+    const parts = [s.modality, s.datetime, s.accessionNumber].filter(Boolean);
+    meta.textContent = parts.join(' · ') || s.description || '';
+
+    card.appendChild(name);
+    card.appendChild(meta);
+
+    if (s.statusClass) {
+      const badge = document.createElement('span');
+      badge.className = 'study-card__status';
+      badge.textContent = s.statusClass;
+      card.appendChild(badge);
+    }
+
+    studiesList.appendChild(card);
+  });
+}
+
 function _setActionButtonsDisabled(disabled) {
   if (!_panel) return;
   _panel.shadow.querySelectorAll('.pbtn').forEach(b => { b.disabled = disabled; });
@@ -576,17 +656,21 @@ async function handleReadStudies() {
     };
     _panel.refs.btnExport.disabled = false;
 
-    addLog(`group=${ctx.group ?? '(nulo)'} filter=${ctx.stdfilter ?? '(nulo)'}`, 'warn');
+    // Log 1: quantidade de .study-item encontrados no HTML
+    const rawCount = (result.html.match(/class="[^"]*study-item/g) || []).length;
+    addLog(`.study-item no HTML: ${rawCount}`, rawCount ? 'success' : 'warn');
 
     if (!studies.length) {
-      addLog('Nenhum exame reconhecido encontrado.', 'warn');
+      addLog('Nenhum exame parseado.', 'warn');
+      renderStudies([]);
     } else {
-      addLog(`${studies.length} exame(s) reconhecido(s).`, 'success');
-      studies.slice(0, 5).forEach(s => {
-        const name = s.patientName || s._rawCells[0] || '—';
-        addLog(`  ${name} | ${s.modality || '?'} | ${s.status || '?'}`);
-      });
-      if (studies.length > 5) addLog(`  … e mais ${studies.length - 5}`);
+      // Log 2: primeiro item parseado
+      const first = studies[0];
+      addLog(`#1 → ${first.patientName || first.title || '?'} | ${first.modality || '?'} | ${first.datetime || '?'}`);
+
+      // Log 3: quantidade renderizada
+      renderStudies(studies);
+      addLog(`${studies.length} exame(s) renderizado(s) no painel.`, 'success');
     }
     updateStatus('ativo', 'Ativo');
   } catch (err) {
