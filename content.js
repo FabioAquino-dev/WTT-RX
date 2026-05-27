@@ -40,6 +40,13 @@ function capturePageContext() {
 
   ctx.sessionid = captureSessionId();
 
+  // Grupo configurado manualmente pelo usuário no painel (fonte mais confiável)
+  const storedGroup = localStorage.getItem('wttrx_group');
+  if (storedGroup) {
+    ctx.group = storedGroup;
+    ctx._sources.group = 'localStorage(wttrx_group)';
+  }
+
   const GLOBALS = {
     group:     ['group', 'currentGroup', 'wgroup', 'workgroup', 'GRUPO', 'grp'],
     stdfilter: ['stdfilter', 'studyFilter', 'currentFilter', 'STDFILTER', 'dateFilter'],
@@ -428,6 +435,34 @@ const PANEL_CSS = `<style>
   color: #8b949e;
   margin-top: 2px;
 }
+
+/* ── Group config row ── */
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.group-label {
+  font-size: 10px;
+  color: #8b949e;
+  flex-shrink: 0;
+}
+
+.group-input {
+  flex: 1;
+  background: #010409;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #c9d1d9;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  padding: 3px 6px;
+  outline: none;
+  text-transform: uppercase;
+}
+.group-input:focus { border-color: #1f6feb; }
+.group-input.saved  { border-color: #238636; }
 </style>`;
 
 // ── Panel HTML ─────────────────────────────────────────────────────────────────
@@ -443,6 +478,10 @@ const PANEL_HTML = `
     <button class="ctrl ctrl--close" id="wttrx-close" title="Fechar">×</button>
   </div>
   <div id="wttrx-body">
+    <div class="group-row">
+      <span class="group-label">Grupo:</span>
+      <input class="group-input" id="wttrx-group-input" type="text" placeholder="ex: RAIOX" maxlength="32" autocomplete="off" spellcheck="false" />
+    </div>
     <div class="panel-actions">
       <button class="pbtn pbtn--primary"   id="wttrx-btn-studies">Ler exames reconhecidos</button>
       <button class="pbtn pbtn--secondary" id="wttrx-btn-unrec"  >Ler não reconhecidos</button>
@@ -488,8 +527,22 @@ function createPanel() {
       studiesWrap:   shadow.querySelector('#wttrx-studies-wrap'),
       studiesList:   shadow.querySelector('#wttrx-studies-list'),
       studiesCount:  shadow.querySelector('#wttrx-studies-count'),
+      groupInput:    shadow.querySelector('#wttrx-group-input'),
     },
   };
+
+  // Restaura grupo salvo
+  const savedGroup = localStorage.getItem('wttrx_group') || '';
+  _panel.refs.groupInput.value = savedGroup;
+  if (savedGroup) _panel.refs.groupInput.classList.add('saved');
+
+  // Persiste ao digitar
+  _panel.refs.groupInput.addEventListener('input', () => {
+    const v = _panel.refs.groupInput.value.trim().toUpperCase();
+    _panel.refs.groupInput.value = v;
+    localStorage.setItem('wttrx_group', v);
+    _panel.refs.groupInput.classList.toggle('saved', !!v);
+  });
 
   shadow.querySelector('#wttrx-min').addEventListener('click', () =>
     _panel.minimized ? restorePanel() : minimizePanel()
