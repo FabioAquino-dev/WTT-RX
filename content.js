@@ -266,16 +266,29 @@ function parseUnrecPrintsHTML(html) {
 // SECTION 2 — Floating panel
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let _panel         = null;
-let _selectedUnrec = null;
-let _selectedStudy = null;
+let _panel = null;
+
+// ── Pipeline state ─────────────────────────────────────────────────────────────
+let _pipeline = {
+  id:          0,      // incremented per run — stale observers check this
+  stage:       'idle', // idle | loading | auto_matched | no_match | manual_mode | error
+  unrec:       null,   // { studyUid, aetitle, datetime, onclick }
+  meta:        null,   // { patientId, patientName, accessionNumber } | null
+  metaLevel:   null,   // 'dom' | 'ocr' | null
+  match:       null,   // { study, confidence: 'high'|'medium', matchedBy } | null
+  manualStudy: null,   // study explicitly selected by user in Level 2
+};
 
 // ── Panel CSS (injected into Shadow DOM) ───────────────────────────────────────
 const PANEL_CSS = `<style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 #wttrx-panel {
-  width: 300px;
+  width: 340px;
+  max-width: 420px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 12px;
   color: #c9d1d9;
@@ -284,6 +297,13 @@ const PANEL_CSS = `<style>
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0,0,0,.75);
   overflow: hidden;
+}
+
+/* ── Minimized strip ── */
+#wttrx-panel.wttrx-minimized {
+  width: auto;
+  min-width: 160px;
+  max-height: none;
 }
 
 /* ── Header / drag handle ── */
@@ -362,7 +382,15 @@ const PANEL_CSS = `<style>
   display: flex;
   flex-direction: column;
   gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0; /* required for flex overflow */
 }
+
+#wttrx-body::-webkit-scrollbar       { width: 4px; }
+#wttrx-body::-webkit-scrollbar-track { background: transparent; }
+#wttrx-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+#wttrx-body::-webkit-scrollbar-thumb:hover { background: #484f58; }
 
 /* ── Action buttons ── */
 .panel-actions { display: flex; flex-direction: column; gap: 5px; }
@@ -580,9 +608,9 @@ const PANEL_CSS = `<style>
 .group-input:focus { border-color: #1f6feb; }
 .group-input.saved  { border-color: #238636; }
 
-/* ── Selection state (association mode) ── */
+/* ── Selection state (manual mode) ── */
 .study-card--selected  { border-color: #1f6feb; background: #0d1e36; }
-.unrec-card--selected  { border-color: #d29922; background: #1e1700; }
+.unrec-card--active    { border-color: #d29922; background: #1c1a0e; }
 
 /* ── Association confirmation panel ── */
 #wttrx-assoc-panel {
@@ -623,6 +651,28 @@ const PANEL_CSS = `<style>
   color: #8b949e;
   padding: 1px 0;
 }
+
+/* ── Confidence / level badge ── */
+.assoc-badge {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+.assoc-tag {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.assoc-tag--high    { background: #1a3a2a; color: #3fb950; }
+.assoc-tag--medium  { background: #2d2a10; color: #d29922; }
+.assoc-tag--manual  { background: #1a2033; color: #58a6ff; }
+.assoc-tag--loading { background: #161b22; color: #8b949e; animation: blink 1s ease-in-out infinite; }
+.assoc-tag--dom     { background: #10202f; color: #388bfd; }
+.assoc-tag--ocr     { background: #1f1030; color: #bc8cff; }
+
 .assoc-btn {
   width: 100%;
   padding: 5px;
@@ -672,16 +722,17 @@ const PANEL_HTML = `
     <div id="wttrx-assoc-panel">
       <div>
         <div class="assoc-section__label">Não reconhecido</div>
-        <div class="assoc-section__value" id="wttrx-assoc-unrec-title">— selecione um não reconhecido</div>
+        <div class="assoc-section__value" id="wttrx-assoc-unrec-title">— clique em um não reconhecido</div>
         <div class="assoc-section__meta"  id="wttrx-assoc-unrec-meta"></div>
       </div>
       <div class="assoc-divider">↓ associar a ↓</div>
       <div>
-        <div class="assoc-section__label">Exame reconhecido</div>
-        <div class="assoc-section__value" id="wttrx-assoc-study-title">— selecione um exame reconhecido</div>
+        <div class="assoc-section__label">Correspondência</div>
+        <div class="assoc-section__value" id="wttrx-assoc-study-title">—</div>
         <div class="assoc-section__meta"  id="wttrx-assoc-study-meta"></div>
+        <div class="assoc-badge"          id="wttrx-assoc-badges"></div>
       </div>
-      <button class="assoc-btn" id="wttrx-btn-associate" disabled>Associar selecionados</button>
+      <button class="assoc-btn" id="wttrx-btn-associate" disabled>Associar automaticamente</button>
     </div>
     <div class="log-box">
       <p class="log-empty" id="wttrx-log-empty">Nenhuma atividade ainda.</p>
@@ -706,7 +757,11 @@ function createPanel() {
 
   const host = document.createElement('div');
   host.id = 'wttrx-panel-host';
-  host.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:2147483647;';
+  const _savedPos = _loadPanelPos();
+  const _posStyle = _savedPos
+    ? `left:${_savedPos.left}px;top:${_savedPos.top}px;`
+    : `top:20px;right:20px;`;
+  host.style.cssText = `position:fixed;${_posStyle}z-index:2147483647;`;
 
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = PANEL_CSS + PANEL_HTML;
@@ -737,6 +792,7 @@ function createPanel() {
       assocUnrecMeta:  shadow.querySelector('#wttrx-assoc-unrec-meta'),
       assocStudyTitle: shadow.querySelector('#wttrx-assoc-study-title'),
       assocStudyMeta:  shadow.querySelector('#wttrx-assoc-study-meta'),
+      assocBadges:     shadow.querySelector('#wttrx-assoc-badges'),
       groupInput:      shadow.querySelector('#wttrx-group-input'),
     },
   };
@@ -761,7 +817,7 @@ function createPanel() {
   shadow.querySelector('#wttrx-btn-studies').addEventListener('click', handleReadStudies);
   shadow.querySelector('#wttrx-btn-unrec').addEventListener('click', handleReadUnrec);
   shadow.querySelector('#wttrx-btn-export').addEventListener('click', handleExport);
-  shadow.querySelector('#wttrx-btn-associate').addEventListener('click', handleAssociate);
+  shadow.querySelector('#wttrx-btn-associate').addEventListener('click', handleAutoAssociate);
 
   makeDraggable(host, shadow.querySelector('#wttrx-header'));
   updateStatus('ativo', 'Ativo');
@@ -780,6 +836,7 @@ function minimizePanel() {
   _panel.minimized = true;
   _panel.refs.btnMin.textContent = '+';
   _panel.refs.btnMin.title = 'Restaurar';
+  _panel.shadow.querySelector('#wttrx-panel').classList.add('wttrx-minimized');
 }
 
 function restorePanel() {
@@ -788,6 +845,7 @@ function restorePanel() {
   _panel.minimized = false;
   _panel.refs.btnMin.textContent = '−';
   _panel.refs.btnMin.title = 'Minimizar';
+  _panel.shadow.querySelector('#wttrx-panel').classList.remove('wttrx-minimized');
 }
 
 function togglePanel() {
@@ -821,27 +879,52 @@ function addLog(text, type = 'info') {
   while (logList.children.length > 12) logList.removeChild(logList.lastChild);
 }
 
+function _savePanelPos(left, top) {
+  localStorage.setItem('wttrx_pos', JSON.stringify({ left, top }));
+}
+
+function _loadPanelPos() {
+  try {
+    const p = JSON.parse(localStorage.getItem('wttrx_pos'));
+    if (typeof p?.left === 'number' && typeof p?.top === 'number') return p;
+  } catch {}
+  return null;
+}
+
 function makeDraggable(host, handle) {
   let dragging = false;
-  let startX, startY, startRight, startBottom;
+  let dragOffX = 0, dragOffY = 0;
 
   handle.addEventListener('mousedown', e => {
     if (e.target.closest('button')) return;
-    dragging    = true;
-    startX      = e.clientX;
-    startY      = e.clientY;
-    startRight  = parseInt(host.style.right,  10) || 20;
-    startBottom = parseInt(host.style.bottom, 10) || 20;
+    dragging = true;
+    const rect = host.getBoundingClientRect();
+    dragOffX = e.clientX - rect.left;
+    dragOffY = e.clientY - rect.top;
+    // Switch to left/top so drag math is straightforward
+    host.style.left   = rect.left + 'px';
+    host.style.top    = rect.top  + 'px';
+    host.style.right  = '';
+    host.style.bottom = '';
     e.preventDefault();
   });
 
   document.addEventListener('mousemove', e => {
     if (!dragging) return;
-    host.style.right  = Math.max(0, startRight  - (e.clientX - startX)) + 'px';
-    host.style.bottom = Math.max(0, startBottom - (e.clientY - startY)) + 'px';
+    const maxL = window.innerWidth  - host.offsetWidth;
+    const maxT = window.innerHeight - host.offsetHeight;
+    host.style.left = Math.max(0, Math.min(maxL, e.clientX - dragOffX)) + 'px';
+    host.style.top  = Math.max(0, Math.min(maxT, e.clientY - dragOffY)) + 'px';
   });
 
-  document.addEventListener('mouseup', () => { dragging = false; });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    _savePanelPos(
+      parseInt(host.style.left, 10),
+      parseInt(host.style.top,  10)
+    );
+  });
 }
 
 // ── Panel action handlers ──────────────────────────────────────────────────────
@@ -885,15 +968,18 @@ function renderStudies(studies) {
 
     if (s.onclick) {
       card.addEventListener('click', () => {
-        studiesList.querySelectorAll('.study-card--active, .study-card--selected')
-          .forEach(c => c.classList.remove('study-card--active', 'study-card--selected'));
-        card.classList.add('study-card--active', 'study-card--selected');
-
-        _selectedStudy = s;
-        updateAssocPanel();
-
         executeInPageContext(s.onclick);
         addLog(`Abrindo exame ${s.accessionNumber} — ${s.patientName || '?'}`);
+
+        // Level 2: if pipeline needs a manual selection, register it
+        if (_pipeline.stage === 'manual_mode' || _pipeline.stage === 'no_match') {
+          studiesList.querySelectorAll('.study-card--selected')
+            .forEach(c => c.classList.remove('study-card--selected'));
+          card.classList.add('study-card--selected');
+          _pipeline.manualStudy = s;
+          _pipeline.stage       = 'manual_mode';
+          refreshAssocPanel();
+        }
       });
     }
 
@@ -939,15 +1025,10 @@ function renderUnrec(items) {
 
     if (u.onclick) {
       card.addEventListener('click', () => {
-        unrecList.querySelectorAll('.unrec-card--active, .unrec-card--selected')
-          .forEach(c => c.classList.remove('unrec-card--active', 'unrec-card--selected'));
-        card.classList.add('unrec-card--active', 'unrec-card--selected');
-
-        _selectedUnrec = u;
-        updateAssocPanel();
-
-        executeInPageContext(u.onclick);
-        addLog(`Abrindo não reconhecido: ${u.aetitle || '?'} - ${u.datetime || '?'}`);
+        unrecList.querySelectorAll('.unrec-card--active')
+          .forEach(c => c.classList.remove('unrec-card--active'));
+        card.classList.add('unrec-card--active');
+        runAutoAssocPipeline(u);
       });
     }
 
@@ -955,42 +1036,304 @@ function renderUnrec(items) {
   });
 }
 
-function updateAssocPanel() {
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 2b — Auto-association pipeline (3-level)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Level 3 stub — OCR not yet implemented
+async function extractMetadataByOCR(_studyUid) {
+  addLog('OCR ainda não implementado. Modo manual necessário.', 'warn');
+  return null;
+}
+
+// Parse alt text of thumb images.
+// Format: "patientId-patientName-modality-...description...-accessionNumber-DD/MM/YYYY"
+function parseThumbAlt(alt) {
+  if (!alt) return null;
+  const parts = alt.split('-');
+  if (parts.length < 4) return null;
+
+  const patientId      = parts[0].trim();
+  const patientName    = parts[1].trim();
+  const lastPart       = parts[parts.length - 1].trim();
+  const secondLast     = parts[parts.length - 2].trim();
+
+  if (!/^\d+$/.test(patientId))                     return null;
+  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(lastPart))     return null;
+  if (!/^\d+$/.test(secondLast))                    return null;
+
+  return { patientId, patientName, accessionNumber: secondLast };
+}
+
+// Level 1 — try to extract patient metadata from DOM injected by getStdPrints
+function extractStudyMetadataFromDOM(studyUid) {
+  let patientId = null;
+
+  // Source A: hidden input injected by PACS after study loads
+  const hiddenInput = document.querySelector(`input[id="RECO_PATID_${studyUid}"]`);
+  if (hiddenInput?.value) patientId = hiddenInput.value.trim();
+
+  // Source B: thumb image alt text
+  let patientName = null, accessionNumber = null;
+  const imgs = document.querySelectorAll('img.thumb-image[alt]');
+  for (const img of imgs) {
+    const parsed = parseThumbAlt(img.getAttribute('alt') || '');
+    if (!parsed) continue;
+    // Don't mix data from a different patient
+    if (patientId && parsed.patientId !== patientId) continue;
+    patientId       = patientId || parsed.patientId;
+    patientName     = parsed.patientName;
+    accessionNumber = parsed.accessionNumber;
+    break;
+  }
+
+  if (!patientId && !accessionNumber) return null;
+  return { patientId, patientName, accessionNumber };
+}
+
+// Wait for PACS to render study images, then extract metadata.
+// Resolves with metadata object or null (never rejects — null means "not found").
+function waitForStudyRender(studyUid, pipelineId, timeoutMs = 10000) {
+  return new Promise(resolve => {
+    // Immediate check before mounting observer
+    const immediate = extractStudyMetadataFromDOM(studyUid);
+    if (immediate) { resolve(immediate); return; }
+
+    let settled = false;
+
+    const settle = meta => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      observer.disconnect();
+      resolve(meta);
+    };
+
+    const timer = setTimeout(() => settle(null), timeoutMs);
+
+    const observer = new MutationObserver(() => {
+      if (_pipeline.id !== pipelineId) { settle(null); return; } // cancelled
+      const meta = extractStudyMetadataFromDOM(studyUid);
+      if (meta) settle(meta);
+    });
+
+    observer.observe(document.body, {
+      childList:       true,
+      subtree:         true,
+      attributes:      true,
+      attributeFilter: ['alt', 'value'],
+    });
+  });
+}
+
+// Find best match in recognized studies list
+function findMatchInStudies(meta, studies) {
+  if (!studies?.length || !meta) return null;
+
+  if (meta.accessionNumber) {
+    const s = studies.find(s => s.accessionNumber?.trim() === meta.accessionNumber.trim());
+    if (s) return { study: s, confidence: 'high', matchedBy: 'accession' };
+  }
+
+  if (meta.patientId) {
+    const s = studies.find(s => s.patientId?.trim() === meta.patientId.trim());
+    if (s) return { study: s, confidence: 'medium', matchedBy: 'patientId' };
+  }
+
+  return null;
+}
+
+// Main pipeline orchestrator — called on every unrec card click
+async function runAutoAssocPipeline(unrecItem) {
+  const pipelineId = ++_pipeline.id;
+
+  _pipeline = {
+    id:          pipelineId,
+    stage:       'loading',
+    unrec:       unrecItem,
+    meta:        null,
+    metaLevel:   null,
+    match:       null,
+    manualStudy: null,
+  };
+
+  refreshAssocPanel();
+  addLog(`Iniciando pipeline: ${unrecItem.aetitle || '?'} — ${unrecItem.datetime || '?'}`);
+
+  // Open study images in page context
+  executeInPageContext(unrecItem.onclick);
+  addLog(`getStdPrints disparado para UID ${unrecItem.studyUid || '?'}`);
+  addLog('Aguardando render das imagens (até 10s)…');
+
+  // ── Level 1: DOM metadata ───────────────────────────────────────────────────
+  const domMeta = await waitForStudyRender(unrecItem.studyUid, pipelineId);
+
+  if (_pipeline.id !== pipelineId) return; // cancelled by a newer click
+
+  if (domMeta) {
+    addLog(`DOM → patientId: ${domMeta.patientId || '?'} | accession: ${domMeta.accessionNumber || '?'}`, 'success');
+    _pipeline.meta      = domMeta;
+    _pipeline.metaLevel = 'dom';
+
+    const studies = _panel?.lastData?.studies || [];
+    const match   = findMatchInStudies(domMeta, studies);
+
+    if (match) {
+      _pipeline.match = match;
+      _pipeline.stage = 'auto_matched';
+      const conf = match.confidence === 'high' ? 'Alta' : 'Média';
+      addLog(`Match por ${match.matchedBy}: ${match.study.patientName} (${match.study.accessionNumber}) — Confiança: ${conf}`, 'success');
+    } else {
+      _pipeline.stage = 'no_match';
+      addLog('Dados extraídos mas sem match nos reconhecidos. Selecione manualmente.', 'warn');
+    }
+
+    refreshAssocPanel();
+    return;
+  }
+
+  // ── Level 3 stub: OCR ───────────────────────────────────────────────────────
+  addLog('DOM: sem dados estruturados. Tentando OCR…', 'warn');
+  const ocrMeta = await extractMetadataByOCR(unrecItem.studyUid);
+
+  if (_pipeline.id !== pipelineId) return;
+
+  if (ocrMeta) {
+    _pipeline.meta      = ocrMeta;
+    _pipeline.metaLevel = 'ocr';
+    const match = findMatchInStudies(ocrMeta, _panel?.lastData?.studies || []);
+    _pipeline.match = match;
+    _pipeline.stage = match ? 'auto_matched' : 'no_match';
+    refreshAssocPanel();
+    return;
+  }
+
+  // ── Level 2: manual ─────────────────────────────────────────────────────────
+  addLog('Nenhum dado estruturado encontrado. Selecione o exame correspondente manualmente.', 'warn');
+  _pipeline.stage = 'manual_mode';
+  refreshAssocPanel();
+}
+
+// Render the assoc confirmation panel based on current _pipeline state
+function refreshAssocPanel() {
   if (!_panel) return;
   const r = _panel.refs;
-  const hasU = !!_selectedUnrec;
-  const hasS = !!_selectedStudy;
+  const p = _pipeline;
 
-  if (hasU || hasS) {
-    r.assocPanel.classList.add('visible');
-    r.assocBtnDo.disabled = !(hasU && hasS);
-
-    r.assocUnrecTitle.textContent = hasU
-      ? (_selectedUnrec.aetitle || _selectedUnrec.studyUid || '—')
-      : '— selecione um não reconhecido';
-    r.assocUnrecMeta.textContent  = hasU ? (_selectedUnrec.datetime || '') : '';
-
-    r.assocStudyTitle.textContent = hasS
-      ? (_selectedStudy.patientName || '—')
-      : '— selecione um exame reconhecido';
-    r.assocStudyMeta.textContent  = hasS
-      ? [_selectedStudy.description, _selectedStudy.accessionNumber].filter(Boolean).join(' · ')
-      : '';
-  } else {
+  if (p.stage === 'idle') {
     r.assocPanel.classList.remove('visible');
+    return;
+  }
+
+  r.assocPanel.classList.add('visible');
+
+  // Unrec section
+  r.assocUnrecTitle.textContent = p.unrec
+    ? (p.unrec.aetitle || p.unrec.studyUid || '—')
+    : '— clique em um não reconhecido';
+
+  const unrecMetaParts = [];
+  if (p.unrec?.datetime)         unrecMetaParts.push(p.unrec.datetime);
+  if (p.meta?.patientId)         unrecMetaParts.push(`ID: ${p.meta.patientId}`);
+  if (p.meta?.accessionNumber)   unrecMetaParts.push(`Acc: ${p.meta.accessionNumber}`);
+  r.assocUnrecMeta.textContent = unrecMetaParts.join(' · ');
+
+  // Badges helper
+  const setBadges = (tags) => {
+    r.assocBadges.innerHTML = '';
+    tags.forEach(([cls, text]) => {
+      const span = document.createElement('span');
+      span.className = `assoc-tag ${cls}`;
+      span.textContent = text;
+      r.assocBadges.appendChild(span);
+    });
+  };
+
+  switch (p.stage) {
+    case 'loading':
+      r.assocStudyTitle.textContent = 'Extraindo dados da imagem…';
+      r.assocStudyMeta.textContent  = '';
+      setBadges([['assoc-tag--loading', 'Aguardando render']]);
+      r.assocBtnDo.disabled    = true;
+      r.assocBtnDo.textContent = 'Associar automaticamente';
+      break;
+
+    case 'auto_matched': {
+      const { study, confidence, matchedBy } = p.match;
+      const confLabel  = confidence === 'high' ? 'Alta' : 'Média';
+      const confClass  = confidence === 'high' ? 'assoc-tag--high' : 'assoc-tag--medium';
+      const levelLabel = p.metaLevel === 'dom' ? 'DOM' : 'OCR';
+      const levelClass = p.metaLevel === 'dom' ? 'assoc-tag--dom' : 'assoc-tag--ocr';
+      r.assocStudyTitle.textContent = study.patientName || '—';
+      r.assocStudyMeta.textContent  = [study.accessionNumber, study.modality, study.description]
+        .filter(Boolean).join(' · ');
+      setBadges([
+        [levelClass,  `Nível: ${levelLabel}`],
+        [confClass,   `Confiança: ${confLabel}`],
+        ['assoc-tag--dom', `por ${matchedBy}`],
+      ]);
+      r.assocBtnDo.disabled    = false;
+      r.assocBtnDo.textContent = 'Associar automaticamente';
+      break;
+    }
+
+    case 'no_match': {
+      const levelLabel = p.metaLevel === 'dom' ? 'DOM' : (p.metaLevel || '?');
+      r.assocStudyTitle.textContent = 'Sem correspondência automática';
+      r.assocStudyMeta.textContent  = 'Clique no exame correspondente na lista acima';
+      setBadges([
+        [p.metaLevel === 'dom' ? 'assoc-tag--dom' : 'assoc-tag--loading', `Nível: ${levelLabel}`],
+        ['assoc-tag--medium', 'Sem match'],
+      ]);
+      r.assocBtnDo.disabled    = true;
+      r.assocBtnDo.textContent = 'Associar manualmente';
+      break;
+    }
+
+    case 'manual_mode':
+      r.assocStudyTitle.textContent = p.manualStudy
+        ? (p.manualStudy.patientName || '—')
+        : '— selecione um exame reconhecido acima';
+      r.assocStudyMeta.textContent = p.manualStudy
+        ? [p.manualStudy.accessionNumber, p.manualStudy.modality].filter(Boolean).join(' · ')
+        : '';
+      setBadges(p.manualStudy
+        ? [['assoc-tag--manual', 'Nível: Manual'], ['assoc-tag--manual', 'Confirmação explícita']]
+        : [['assoc-tag--loading', 'Aguardando seleção manual']]
+      );
+      r.assocBtnDo.disabled    = !p.manualStudy;
+      r.assocBtnDo.textContent = 'Associar manualmente';
+      break;
+
+    case 'error':
+      r.assocStudyTitle.textContent = 'Erro no pipeline';
+      r.assocStudyMeta.textContent  = '';
+      setBadges([]);
+      r.assocBtnDo.disabled = true;
+      break;
   }
 }
 
-function handleAssociate() {
-  if (!_selectedUnrec || !_selectedStudy) return;
+function handleAutoAssociate() {
+  const p = _pipeline;
+  if (p.stage !== 'auto_matched' && p.stage !== 'manual_mode') return;
 
-  const u = _selectedUnrec;
-  const s = _selectedStudy;
+  const study = p.stage === 'auto_matched' ? p.match.study : p.manualStudy;
+  if (!study || !p.unrec) return;
+
+  const isAuto   = p.stage === 'auto_matched';
+  const confLabel = isAuto
+    ? `Confiança: ${p.match.confidence === 'high' ? 'Alta' : 'Média'} (por ${p.match.matchedBy})`
+    : 'Confirmação manual explícita';
+  const levelLabel = p.metaLevel
+    ? `Nível: ${p.metaLevel.toUpperCase()}`
+    : 'Nível: Manual';
 
   const ok = confirm(
-    `Confirma associar este não reconhecido a este exame?\n\n` +
-    `N/R: ${u.aetitle || u.studyUid} — ${u.datetime}\n` +
-    `Exame: ${s.patientName} — ${s.accessionNumber}`
+    `Confirma a associação?\n\n` +
+    `Não reconhecido: ${p.unrec.aetitle || p.unrec.studyUid} — ${p.unrec.datetime || '?'}\n` +
+    `Exame: ${study.patientName} — ${study.accessionNumber}\n\n` +
+    `${levelLabel} · ${confLabel}`
   );
 
   if (!ok) {
@@ -998,17 +1341,25 @@ function handleAssociate() {
     return;
   }
 
-  addLog(`Associando ${u.aetitle || u.studyUid} → ${s.patientName} (${s.accessionNumber})…`);
+  if (!study.associateOnclick) {
+    addLog('Erro: associateOnclick não disponível para este exame.', 'error');
+    return;
+  }
 
-  const studyKey  = `${s.patientId}_${s.accessionNumber}`;
-  const assocCode = s.associateOnclick.replace(
+  addLog(`Associando ${p.unrec.aetitle || p.unrec.studyUid} → ${study.patientName} (${study.accessionNumber})…`);
+
+  const assocCode = study.associateOnclick.replace(
     /,\s*this\s*\)\s*;?\s*$/,
-    `, document.querySelector('#STUDY_${studyKey} .study-item-status'));`
+    `, document.querySelector('[id="STUDY_${study.patientId}_${study.accessionNumber}"] .study-item-status'));`
   );
 
   addLog(`exec: ${assocCode}`);
   executeInPageContext(assocCode);
-  addLog('Associação executada. Verifique o sistema.', 'success');
+  addLog(`Associação ${isAuto ? 'automática' : 'manual'} executada. Verifique o sistema.`, 'success');
+
+  // Reset pipeline after successful association
+  _pipeline.stage = 'idle';
+  refreshAssocPanel();
 }
 
 function _setActionButtonsDisabled(disabled) {
@@ -1018,8 +1369,6 @@ function _setActionButtonsDisabled(disabled) {
 
 async function handleReadStudies() {
   if (!_panel) return;
-  _selectedStudy = null;
-  updateAssocPanel();
   _setActionButtonsDisabled(true);
   updateStatus('lendo', 'Lendo…');
   addLog('Buscando exames reconhecidos…');
@@ -1075,8 +1424,6 @@ async function handleReadStudies() {
 
 async function handleReadUnrec() {
   if (!_panel) return;
-  _selectedUnrec = null;
-  updateAssocPanel();
   _setActionButtonsDisabled(true);
   updateStatus('lendo', 'Lendo…');
   addLog('Buscando exames não reconhecidos…');
