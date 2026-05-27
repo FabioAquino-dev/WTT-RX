@@ -266,7 +266,9 @@ function parseUnrecPrintsHTML(html) {
 // SECTION 2 — Floating panel
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let _panel = null;
+let _panel         = null;
+let _selectedUnrec = null;
+let _selectedStudy = null;
 
 // ── Panel CSS (injected into Shadow DOM) ───────────────────────────────────────
 const PANEL_CSS = `<style>
@@ -577,6 +579,64 @@ const PANEL_CSS = `<style>
 }
 .group-input:focus { border-color: #1f6feb; }
 .group-input.saved  { border-color: #238636; }
+
+/* ── Selection state (association mode) ── */
+.study-card--selected  { border-color: #1f6feb; background: #0d1e36; }
+.unrec-card--selected  { border-color: #d29922; background: #1e1700; }
+
+/* ── Association confirmation panel ── */
+#wttrx-assoc-panel {
+  border: 1px solid #1f6feb;
+  border-radius: 6px;
+  background: #0d1117;
+  padding: 8px;
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+}
+#wttrx-assoc-panel.visible { display: flex; }
+.assoc-section__label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8b949e;
+  margin-bottom: 1px;
+}
+.assoc-section__value {
+  font-size: 11px;
+  font-weight: 600;
+  color: #c9d1d9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.assoc-section__meta {
+  font-size: 10px;
+  color: #8b949e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.assoc-divider {
+  text-align: center;
+  font-size: 10px;
+  color: #8b949e;
+  padding: 1px 0;
+}
+.assoc-btn {
+  width: 100%;
+  padding: 5px;
+  background: #1f6feb;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+.assoc-btn:hover:not(:disabled) { background: #388bfd; }
+.assoc-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 </style>`;
 
 // ── Panel HTML ─────────────────────────────────────────────────────────────────
@@ -608,6 +668,20 @@ const PANEL_HTML = `
     <div id="wttrx-unrec-wrap" style="display:none;">
       <div class="section-label section-label--unrec">Não reconhecidos (<span id="wttrx-unrec-count">0</span>)</div>
       <div class="studies-scroll" id="wttrx-unrec-list"></div>
+    </div>
+    <div id="wttrx-assoc-panel">
+      <div>
+        <div class="assoc-section__label">Não reconhecido</div>
+        <div class="assoc-section__value" id="wttrx-assoc-unrec-title">— selecione um não reconhecido</div>
+        <div class="assoc-section__meta"  id="wttrx-assoc-unrec-meta"></div>
+      </div>
+      <div class="assoc-divider">↓ associar a ↓</div>
+      <div>
+        <div class="assoc-section__label">Exame reconhecido</div>
+        <div class="assoc-section__value" id="wttrx-assoc-study-title">— selecione um exame reconhecido</div>
+        <div class="assoc-section__meta"  id="wttrx-assoc-study-meta"></div>
+      </div>
+      <button class="assoc-btn" id="wttrx-btn-associate" disabled>Associar selecionados</button>
     </div>
     <div class="log-box">
       <p class="log-empty" id="wttrx-log-empty">Nenhuma atividade ainda.</p>
@@ -656,8 +730,14 @@ function createPanel() {
       studiesCount:  shadow.querySelector('#wttrx-studies-count'),
       unrecWrap:     shadow.querySelector('#wttrx-unrec-wrap'),
       unrecList:     shadow.querySelector('#wttrx-unrec-list'),
-      unrecCount:    shadow.querySelector('#wttrx-unrec-count'),
-      groupInput:    shadow.querySelector('#wttrx-group-input'),
+      unrecCount:      shadow.querySelector('#wttrx-unrec-count'),
+      assocPanel:      shadow.querySelector('#wttrx-assoc-panel'),
+      assocBtnDo:      shadow.querySelector('#wttrx-btn-associate'),
+      assocUnrecTitle: shadow.querySelector('#wttrx-assoc-unrec-title'),
+      assocUnrecMeta:  shadow.querySelector('#wttrx-assoc-unrec-meta'),
+      assocStudyTitle: shadow.querySelector('#wttrx-assoc-study-title'),
+      assocStudyMeta:  shadow.querySelector('#wttrx-assoc-study-meta'),
+      groupInput:      shadow.querySelector('#wttrx-group-input'),
     },
   };
 
@@ -681,6 +761,7 @@ function createPanel() {
   shadow.querySelector('#wttrx-btn-studies').addEventListener('click', handleReadStudies);
   shadow.querySelector('#wttrx-btn-unrec').addEventListener('click', handleReadUnrec);
   shadow.querySelector('#wttrx-btn-export').addEventListener('click', handleExport);
+  shadow.querySelector('#wttrx-btn-associate').addEventListener('click', handleAssociate);
 
   makeDraggable(host, shadow.querySelector('#wttrx-header'));
   updateStatus('ativo', 'Ativo');
@@ -804,12 +885,13 @@ function renderStudies(studies) {
 
     if (s.onclick) {
       card.addEventListener('click', () => {
-        // Destaca card selecionado
-        studiesList.querySelectorAll('.study-card--active')
-          .forEach(c => c.classList.remove('study-card--active'));
-        card.classList.add('study-card--active');
+        studiesList.querySelectorAll('.study-card--active, .study-card--selected')
+          .forEach(c => c.classList.remove('study-card--active', 'study-card--selected'));
+        card.classList.add('study-card--active', 'study-card--selected');
 
-        // Abre exame no contexto da página (onde getStdPrints vive)
+        _selectedStudy = s;
+        updateAssocPanel();
+
         executeInPageContext(s.onclick);
         addLog(`Abrindo exame ${s.accessionNumber} — ${s.patientName || '?'}`);
       });
@@ -857,9 +939,12 @@ function renderUnrec(items) {
 
     if (u.onclick) {
       card.addEventListener('click', () => {
-        unrecList.querySelectorAll('.unrec-card--active')
-          .forEach(c => c.classList.remove('unrec-card--active'));
-        card.classList.add('unrec-card--active');
+        unrecList.querySelectorAll('.unrec-card--active, .unrec-card--selected')
+          .forEach(c => c.classList.remove('unrec-card--active', 'unrec-card--selected'));
+        card.classList.add('unrec-card--active', 'unrec-card--selected');
+
+        _selectedUnrec = u;
+        updateAssocPanel();
 
         executeInPageContext(u.onclick);
         addLog(`Abrindo não reconhecido: ${u.aetitle || '?'} - ${u.datetime || '?'}`);
@@ -870,6 +955,62 @@ function renderUnrec(items) {
   });
 }
 
+function updateAssocPanel() {
+  if (!_panel) return;
+  const r = _panel.refs;
+  const hasU = !!_selectedUnrec;
+  const hasS = !!_selectedStudy;
+
+  if (hasU || hasS) {
+    r.assocPanel.classList.add('visible');
+    r.assocBtnDo.disabled = !(hasU && hasS);
+
+    r.assocUnrecTitle.textContent = hasU
+      ? (_selectedUnrec.aetitle || _selectedUnrec.studyUid || '—')
+      : '— selecione um não reconhecido';
+    r.assocUnrecMeta.textContent  = hasU ? (_selectedUnrec.datetime || '') : '';
+
+    r.assocStudyTitle.textContent = hasS
+      ? (_selectedStudy.patientName || '—')
+      : '— selecione um exame reconhecido';
+    r.assocStudyMeta.textContent  = hasS
+      ? [_selectedStudy.description, _selectedStudy.accessionNumber].filter(Boolean).join(' · ')
+      : '';
+  } else {
+    r.assocPanel.classList.remove('visible');
+  }
+}
+
+function handleAssociate() {
+  if (!_selectedUnrec || !_selectedStudy) return;
+
+  const u = _selectedUnrec;
+  const s = _selectedStudy;
+
+  const ok = confirm(
+    `Confirma associar este não reconhecido a este exame?\n\n` +
+    `N/R: ${u.aetitle || u.studyUid} — ${u.datetime}\n` +
+    `Exame: ${s.patientName} — ${s.accessionNumber}`
+  );
+
+  if (!ok) {
+    addLog('Associação cancelada.', 'warn');
+    return;
+  }
+
+  addLog(`Associando ${u.aetitle || u.studyUid} → ${s.patientName} (${s.accessionNumber})…`);
+
+  const studyKey  = `${s.patientId}_${s.accessionNumber}`;
+  const assocCode = s.associateOnclick.replace(
+    /,\s*this\s*\)\s*;?\s*$/,
+    `, document.querySelector('#STUDY_${studyKey} .study-item-status'));`
+  );
+
+  addLog(`exec: ${assocCode}`);
+  executeInPageContext(assocCode);
+  addLog('Associação executada. Verifique o sistema.', 'success');
+}
+
 function _setActionButtonsDisabled(disabled) {
   if (!_panel) return;
   _panel.shadow.querySelectorAll('.pbtn').forEach(b => { b.disabled = disabled; });
@@ -877,6 +1018,8 @@ function _setActionButtonsDisabled(disabled) {
 
 async function handleReadStudies() {
   if (!_panel) return;
+  _selectedStudy = null;
+  updateAssocPanel();
   _setActionButtonsDisabled(true);
   updateStatus('lendo', 'Lendo…');
   addLog('Buscando exames reconhecidos…');
@@ -932,6 +1075,8 @@ async function handleReadStudies() {
 
 async function handleReadUnrec() {
   if (!_panel) return;
+  _selectedUnrec = null;
+  updateAssocPanel();
   _setActionButtonsDisabled(true);
   updateStatus('lendo', 'Lendo…');
   addLog('Buscando exames não reconhecidos…');
