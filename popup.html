@@ -22,27 +22,23 @@
       <span class="app__version">v0.2.0</span>
     </header>
 
-    <div class="toolbar">
-      <div class="session-status">
-        <span class="status-dot" id="js-session-dot" aria-hidden="true"></span>
-        <span class="session-label" id="js-session-label">Aguardando busca…</span>
+    <main class="app__content">
+
+      <div class="status-card" aria-label="Estado do painel">
+        <span class="status-card__dot" id="js-status-dot" aria-hidden="true"></span>
+        <span class="status-card__label" id="js-status-label">Verificando…</span>
       </div>
-      <button class="btn btn--primary" id="js-btn-fetch"
-              aria-label="Buscar exames no servidor">
-        Buscar
-      </button>
-    </div>
 
-    <main class="app__content" id="js-content" aria-live="polite">
-      <p class="empty-state">Clique em "Buscar" para carregar os exames do servidor.</p>
+      <button class="btn btn--primary btn--full" id="js-btn-toggle"
+              aria-label="Ativar ou desativar o painel flutuante">
+        Ativar Painel
+      </button>
+
+      <p class="hint" id="js-hint">
+        O painel aparecerá na página ativa do sistema de radiologia.
+      </p>
+
     </main>
-
-    <footer class="app__footer">
-      <button class="btn btn--ghost" id="js-btn-export" disabled
-              aria-label="Exportar dados como JSON">
-        Exportar JSON
-      </button>
-    </footer>
 
   </div>
   <script src="popup.js"></script>
