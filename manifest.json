@@ -1,49 +1,25 @@
 {
   "manifest_version": 3,
   "name": "WTT-RX",
-  "version": "0.1.0",
-  "description": "Automação de fluxo de exames para sistema de radiologia — uso interno.",
+  "version": "0.2.0",
+  "description": "Diagnóstico de exames via API do sistema de radiologia — uso interno.",
 
-  "permissions": [
-    "storage",
-    "tabs",
-    "scripting"
-  ],
+  "permissions": ["tabs"],
 
   "host_permissions": [
     "*://*/*"
   ],
 
-  "background": {
-    "service_worker": "src/background/service-worker.js"
-  },
-
   "content_scripts": [
     {
       "matches": ["*://*/*"],
-      "js": [
-        "src/content/core/constants.js",
-        "src/content/core/logger.js",
-        "src/content/services/storage.js",
-        "src/content/services/messaging.js",
-        "src/content/core/config.js",
-        "src/content/queue/retry.js",
-        "src/content/queue/queue.js",
-        "src/content/observers/page-state.observer.js",
-        "src/content/observers/exam-list.observer.js",
-        "src/content/automation/exam-reader.js",
-        "src/content/automation/patient-matcher.js",
-        "src/content/automation/exam-associator.js",
-        "src/content/ui/overlay.js",
-        "src/content/ui/status-badge.js",
-        "src/content/index.js"
-      ],
+      "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],
 
   "action": {
-    "default_popup": "src/popup/popup.html",
+    "default_popup": "popup.html",
     "default_title": "WTT-RX",
     "default_icon": {
       "16":  "assets/icons/icon16.png",
@@ -51,11 +27,6 @@
       "48":  "assets/icons/icon48.png",
       "128": "assets/icons/icon128.png"
     }
-  },
-
-  "options_ui": {
-    "page": "src/options/options.html",
-    "open_in_tab": true
   },
 
   "icons": {
