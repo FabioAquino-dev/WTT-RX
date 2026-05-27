@@ -546,7 +546,8 @@ const PANEL_CSS = `<style>
   font-weight: 500;
   flex-shrink: 0;
 }
-.unrec-card__status.status-unrec { background: #2d1f0e; color: #d29922; }
+.unrec-card__status.status-unrec  { background: #2d1f0e; color: #d29922; }
+.unrec-card__status.status-torec  { background: #0d2a1a; color: #3fb950; }
 
 /* ── Group config row ── */
 .group-row {
