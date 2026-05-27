@@ -1201,10 +1201,242 @@ function renderUnrec(items) {
 // SECTION 2b — Auto-association pipeline (3-level)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Level 3 stub — OCR not yet implemented
-async function extractMetadataByOCR(_studyUid) {
-  addLog('OCR ainda não implementado. Modo manual necessário.', 'warn');
+// ── Level 3 — OCR pipeline (Tesseract.js) ─────────────────────────────────────
+
+let _ocrWorker = null; // reused across calls; terminated after each pipeline run
+
+async function _ensureOCRWorker() {
+  if (_ocrWorker) return _ocrWorker;
+  addLog('OCR: inicializando Tesseract.js…');
+  _ocrWorker = await Tesseract.createWorker('eng', Tesseract.OEM.LSTM_ONLY, {
+    workerBlobURL: false,
+    workerPath:    chrome.runtime.getURL('vendor/tesseract.worker.min.js'),
+    // Core WASM and language data load from CDN inside the extension worker context
+    logger: m => {
+      if (m.status === 'recognizing text') {
+        const pct = Math.round((m.progress || 0) * 100);
+        if (pct % 25 === 0) addLog(`OCR: processando… ${pct}%`);
+      }
+    },
+  });
+  await _ocrWorker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT });
+  addLog('OCR: Tesseract pronto.', 'success');
+  return _ocrWorker;
+}
+
+async function _terminateOCRWorker() {
+  if (!_ocrWorker) return;
+  try { await _ocrWorker.terminate(); } catch {}
+  _ocrWorker = null;
+}
+
+// Step 1: find the main rendered image element in the PACS viewer
+function _extractRenderedStudyImage() {
+  const MIN_DIM = 400;
+
+  const visible = el => {
+    if (el.offsetWidth < MIN_DIM || el.offsetHeight < MIN_DIM) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < MIN_DIM || r.height < MIN_DIM) return false;
+    const s = window.getComputedStyle(el);
+    return s.display !== 'none' && s.visibility !== 'hidden';
+  };
+
+  // Prefer canvas (WebGL/2D PACS renders), excluding tiny thumbnails
+  const canvases = Array.from(document.querySelectorAll('canvas'))
+    .filter(visible)
+    .sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight));
+  if (canvases.length) {
+    const c = canvases[0];
+    addLog(`OCR: canvas ${c.offsetWidth}×${c.offsetHeight} encontrado.`);
+    return { element: c, width: c.offsetWidth, height: c.offsetHeight, type: 'canvas' };
+  }
+
+  // Fallback: img elements (exclude side-panel thumbs)
+  const imgs = Array.from(document.querySelectorAll('img:not(.thumb-image)'))
+    .filter(visible)
+    .sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight));
+  if (imgs.length) {
+    const img = imgs[0];
+    addLog(`OCR: img ${img.offsetWidth}×${img.offsetHeight} encontrada.`);
+    return { element: img, width: img.offsetWidth, height: img.offsetHeight, type: 'img' };
+  }
+
+  addLog('OCR: nenhum render principal encontrado (canvas/img > 400×400).', 'warn');
   return null;
+}
+
+// Step 2: capture bitmap from canvas or img
+function _captureStudyBitmap(render) {
+  const { element, width, height } = render;
+  const canvas = document.createElement('canvas');
+  canvas.width  = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  try {
+    ctx.drawImage(element, 0, 0, width, height);
+  } catch (e) {
+    addLog(`OCR: falha ao capturar imagem — ${e.message}`, 'warn');
+    return null;
+  }
+  // Sanity-check: not completely blank/transparent
+  try {
+    const px = ctx.getImageData(width >> 1, height >> 1, 4, 4).data;
+    const allZero = px.every(v => v === 0);
+    if (allZero) addLog('OCR: pixel central é zero — imagem pode estar em branco.', 'warn');
+  } catch {}
+  return { canvas, ctx, width, height };
+}
+
+// Step 3: crop a sub-region from a canvas
+function _cropRegion(srcCanvas, x, y, w, h) {
+  const c = document.createElement('canvas');
+  c.width  = Math.round(w);
+  c.height = Math.round(h);
+  c.getContext('2d').drawImage(srcCanvas, Math.round(x), Math.round(y), Math.round(w), Math.round(h), 0, 0, c.width, c.height);
+  return c;
+}
+
+// Step 4: preprocess canvas for DICOM OCR (grayscale → invert → contrast → upscale 2×)
+function _preprocessForOCR(srcCanvas) {
+  const sw = srcCanvas.width, sh = srcCanvas.height;
+  const dst = document.createElement('canvas');
+  dst.width  = sw * 2;
+  dst.height = sh * 2;
+  const ctx = dst.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(srcCanvas, 0, 0, dst.width, dst.height);
+
+  const img = ctx.getImageData(0, 0, dst.width, dst.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    // Grayscale
+    const g = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+    // Hard threshold: DICOM text is white (~200-255) on black; invert so text → black on white
+    const v = g > 140 ? 0 : 255;
+    d[i] = d[i+1] = d[i+2] = v;
+    d[i+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return dst;
+}
+
+// Step 5: parse raw OCR text → { patientName, patientId, accessionNumber }
+function _parseOCRText(raw) {
+  if (!raw || raw.trim().length < 4) return null;
+
+  const lines = raw.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+
+  let patientName = null, patientId = null, accessionNumber = null;
+
+  // Collect all standalone 6–10 digit numbers
+  const numPattern = /\b(\d{6,10})\b/g;
+  const allNums = [];
+  for (const line of lines) {
+    let m;
+    while ((m = numPattern.exec(line)) !== null) allNums.push(m[1]);
+  }
+
+  // Name: uppercase, 2+ words, 8+ chars, no digits
+  const nameRe = /^[A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÜ][A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÜ\s]{7,}$/;
+  for (const line of lines) {
+    const up = line.toUpperCase();
+    if (nameRe.test(up) && up.split(/\s+/).length >= 2 && !/\d/.test(up)) {
+      patientName = up;
+      break;
+    }
+  }
+
+  // First number = patientId, second = accessionNumber (common PACS layout)
+  if (allNums.length >= 1) patientId       = allNums[0];
+  if (allNums.length >= 2) accessionNumber = allNums[1];
+
+  if (!patientName && !patientId && !accessionNumber) return null;
+  return { patientName, patientId, accessionNumber };
+}
+
+// Main OCR entry — replaces the former stub
+async function extractMetadataByOCR(studyUid) {
+  if (typeof Tesseract === 'undefined') {
+    addLog('OCR: Tesseract.js não carregado (verifique manifest).', 'error');
+    return null;
+  }
+
+  const pipelineId = _pipeline.id;
+
+  // Step 1
+  const render = _extractRenderedStudyImage();
+  if (!render || _pipeline.id !== pipelineId) return null;
+
+  // Step 2
+  const bitmap = _captureStudyBitmap(render);
+  if (!bitmap || _pipeline.id !== pipelineId) return null;
+  addLog(`OCR: imagem capturada ${bitmap.width}×${bitmap.height}.`);
+
+  // Step 3: three crop regions in order of specificity
+  const { width: W, height: H } = bitmap;
+  const regions = [
+    { name: 'superior-direito', x: W * 0.52, y: 0,      w: W * 0.48, h: H * 0.42 },
+    { name: 'superior-central', x: W * 0.15, y: 0,      w: W * 0.70, h: H * 0.35 },
+    { name: 'metade-superior',  x: 0,        y: 0,      w: W,        h: H * 0.50 },
+  ];
+
+  let worker;
+  try {
+    worker = await _ensureOCRWorker();
+  } catch (e) {
+    addLog(`OCR: falha ao inicializar worker — ${e.message}`, 'error');
+    return null;
+  }
+  if (_pipeline.id !== pipelineId) { await _terminateOCRWorker(); return null; }
+
+  // OCR timeout — abort after 15 s per region
+  let timedOut = false;
+  const timeoutId = setTimeout(async () => {
+    timedOut = true;
+    addLog('OCR: timeout (15s). Abortando.', 'warn');
+    await _terminateOCRWorker();
+  }, 15000);
+
+  let result = null;
+  try {
+    for (const region of regions) {
+      if (timedOut || _pipeline.id !== pipelineId) break;
+
+      addLog(`OCR: região "${region.name}"…`);
+      const cropped = _cropRegion(bitmap.canvas, region.x, region.y, region.w, region.h);
+      const proc    = _preprocessForOCR(cropped);
+
+      let rawText;
+      try {
+        const { data: { text } } = await worker.recognize(proc);
+        rawText = text || '';
+      } catch (e) {
+        addLog(`OCR ${region.name}: erro — ${e.message}`, 'warn');
+        continue;
+      }
+
+      const excerpt = rawText.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+      addLog(`OCR texto: "${excerpt}"`);
+
+      const parsed = _parseOCRText(rawText);
+      if (parsed && (parsed.patientId || parsed.accessionNumber)) {
+        addLog(
+          `OCR: ID=${parsed.patientId || '?'} | acc=${parsed.accessionNumber || '?'} | nome=${parsed.patientName || '?'}`,
+          'success'
+        );
+        result = { ...parsed, rawText };
+        break;
+      }
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    await _terminateOCRWorker();
+  }
+
+  if (!result) addLog('OCR: nenhum dado estruturado extraído.', 'warn');
+  return result;
 }
 
 // Parse alt text of thumb images.
@@ -1353,8 +1585,8 @@ async function runAutoAssocPipeline(unrecItem) {
     return;
   }
 
-  // ── Level 3 stub: OCR ───────────────────────────────────────────────────────
-  addLog('DOM: sem dados estruturados. Tentando OCR…', 'warn');
+  // ── Level 3: OCR ────────────────────────────────────────────────────────────
+  addLog('DOM: sem dados estruturados. Iniciando OCR…', 'warn');
   const ocrMeta = await extractMetadataByOCR(unrecItem.studyUid);
 
   if (_pipeline.id !== pipelineId) return;
