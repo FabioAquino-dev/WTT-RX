@@ -27,19 +27,118 @@ function captureSessionId() {
   return hiddenInput?.value || null;
 }
 
-async function postAction(action, sessionId) {
+// Captura todos os parâmetros que o browser envia junto com findStudies/findUnrecPrints
+function capturePageContext() {
+  const ctx = {
+    sessionid:  null,
+    group:      null,
+    stdfilter:  null,
+    sourceaet:  null,
+    aesource:   null,
+    _sources:   {},
+  };
+
+  ctx.sessionid = captureSessionId();
+
+  const GLOBALS = {
+    group:     ['group', 'currentGroup', 'wgroup', 'workgroup', 'GRUPO', 'grp'],
+    stdfilter: ['stdfilter', 'studyFilter', 'currentFilter', 'STDFILTER', 'dateFilter'],
+    sourceaet: ['sourceaet', 'sourceAet', 'sourceAET', 'SOURCEAET', 'srcAET'],
+    aesource:  ['aesource', 'aeSource', 'AESOURCE', 'AESource', 'aeSourceAET'],
+  };
+
+  // 1) window globals
+  for (const [field, keys] of Object.entries(GLOBALS)) {
+    for (const key of keys) {
+      const v = window[key];
+      if (typeof v === 'string' && v) {
+        ctx[field] = v;
+        ctx._sources[field] = `window.${key}`;
+        break;
+      }
+    }
+  }
+
+  // 2) form inputs / selects
+  const INPUT_NAMES = {
+    group:     ['group', 'currentGroup', 'grpName', 'grupName'],
+    stdfilter: ['stdfilter', 'filter', 'studyFilter', 'stdFilter'],
+    sourceaet: ['sourceaet', 'sourceAet', 'srcAet'],
+    aesource:  ['aesource', 'aeSource', 'aeSourceAet'],
+  };
+  for (const [field, names] of Object.entries(INPUT_NAMES)) {
+    if (ctx[field]) continue;
+    for (const name of names) {
+      const el = document.querySelector(
+        `select[name="${name}"], input[name="${name}"], input[type="hidden"][name="${name}"]`
+      );
+      if (el?.value) {
+        ctx[field] = el.value;
+        ctx._sources[field] = `input[name="${name}"]`;
+        break;
+      }
+    }
+  }
+
+  // 3) URL query string
+  const urlParams = new URLSearchParams(window.location.search);
+  for (const [field, names] of Object.entries(INPUT_NAMES)) {
+    if (ctx[field]) continue;
+    for (const name of names) {
+      const v = urlParams.get(name);
+      if (v) {
+        ctx[field] = v;
+        ctx._sources[field] = `URL?${name}`;
+        break;
+      }
+    }
+  }
+
+  // 4) sessionStorage
+  for (const [field, keys] of Object.entries(GLOBALS)) {
+    if (ctx[field]) continue;
+    for (const key of keys) {
+      const v = sessionStorage.getItem(key);
+      if (v) {
+        ctx[field] = v;
+        ctx._sources[field] = `sessionStorage.${key}`;
+        break;
+      }
+    }
+  }
+
+  return ctx;
+}
+
+// Retorna { html, payload, responseStatus, responseLength, responsePreview }
+async function postAction(action, ctx) {
   const params = new URLSearchParams({ action });
-  if (sessionId) params.set('sessionid', sessionId);
+  if (ctx.sessionid) params.set('sessionid', ctx.sessionid);
+  if (ctx.group)     params.set('group',     ctx.group);
+  if (ctx.stdfilter) params.set('stdfilter', ctx.stdfilter);
+  if (ctx.sourceaet) params.set('sourceaet', ctx.sourceaet);
+  if (ctx.aesource)  params.set('aesource',  ctx.aesource);
+
+  const payload = params.toString();
 
   const resp = await fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     credentials: 'include',
-    body: params.toString(),
+    body: payload,
   });
 
+  const html = await resp.text();
+
   if (!resp.ok) throw new Error(`HTTP ${resp.status} — action: ${action}`);
-  return resp.text();
+
+  return {
+    html,
+    payload,
+    responseStatus:  resp.status,
+    responseLength:  html.length,
+    responsePreview: html.slice(0, 600),
+  };
 }
 
 function extractOnclickArgs(attr) {
@@ -418,13 +517,28 @@ async function handleReadStudies() {
   addLog('Buscando exames reconhecidos…');
 
   try {
-    const sessionId = captureSessionId();
-    const html      = await postAction('findStudies', sessionId);
-    const studies   = parseStudiesHTML(html);
+    const ctx     = capturePageContext();
+    const result  = await postAction('findStudies', ctx);
+    const studies = parseStudiesHTML(result.html);
 
     if (!_panel) return;
-    _panel.lastData = { ..._panel.lastData, studies, _rawStudiesHtml: html };
+    _panel.lastData = {
+      ..._panel.lastData,
+      studies,
+      _rawStudiesHtml:       result.html,
+      payloadFindStudies:    result.payload,
+      responseStatusStudies: result.responseStatus,
+      responseLenStudies:    result.responseLength,
+      responsePreviewStudies:result.responsePreview,
+      currentGroup:          ctx.group,
+      currentFilter:         ctx.stdfilter,
+      locationHref:          location.href,
+      documentCookie:        document.cookie || null,
+      _contextSources:       ctx._sources,
+    };
     _panel.refs.btnExport.disabled = false;
+
+    addLog(`group=${ctx.group ?? '(nulo)'} filter=${ctx.stdfilter ?? '(nulo)'}`, 'warn');
 
     if (!studies.length) {
       addLog('Nenhum exame reconhecido encontrado.', 'warn');
@@ -454,13 +568,28 @@ async function handleReadUnrec() {
   addLog('Buscando exames não reconhecidos…');
 
   try {
-    const sessionId = captureSessionId();
-    const html      = await postAction('findUnrecPrints', sessionId);
-    const items     = parseUnrecPrintsHTML(html);
+    const ctx    = capturePageContext();
+    const result = await postAction('findUnrecPrints', ctx);
+    const items  = parseUnrecPrintsHTML(result.html);
 
     if (!_panel) return;
-    _panel.lastData = { ..._panel.lastData, unrecPrints: items, _rawUnrecHtml: html };
+    _panel.lastData = {
+      ..._panel.lastData,
+      unrecPrints: items,
+      _rawUnrecHtml:        result.html,
+      payloadFindUnrecPrints:   result.payload,
+      responseStatusUnrec:  result.responseStatus,
+      responseLenUnrec:     result.responseLength,
+      responsePreviewUnrec: result.responsePreview,
+      currentGroup:         ctx.group,
+      currentFilter:        ctx.stdfilter,
+      locationHref:         location.href,
+      documentCookie:       document.cookie || null,
+      _contextSources:      ctx._sources,
+    };
     _panel.refs.btnExport.disabled = false;
+
+    addLog(`group=${ctx.group ?? '(nulo)'} filter=${ctx.stdfilter ?? '(nulo)'}`, 'warn');
 
     if (!items.length) {
       addLog('Nenhum exame não reconhecido.', 'warn');
@@ -532,21 +661,30 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       return false;
 
     case 'WTTRX_FETCH':
-      // Kept for direct popup fetch (backwards compat)
       (async () => {
         try {
-          const sessionId = captureSessionId();
-          const [studiesHtml, unrecHtml] = await Promise.all([
-            postAction('findStudies',     sessionId),
-            postAction('findUnrecPrints', sessionId),
+          const ctx = capturePageContext();
+          const [rStudies, rUnrec] = await Promise.all([
+            postAction('findStudies',     ctx),
+            postAction('findUnrecPrints', ctx),
           ]);
           sendResponse({
-            ok:              true,
-            sessionCaptured: !!sessionId,
-            studies:         parseStudiesHTML(studiesHtml),
-            unrecPrints:     parseUnrecPrintsHTML(unrecHtml),
-            _rawStudiesHtml: studiesHtml,
-            _rawUnrecHtml:   unrecHtml,
+            ok:                     true,
+            sessionCaptured:        !!ctx.sessionid,
+            studies:                parseStudiesHTML(rStudies.html),
+            unrecPrints:            parseUnrecPrintsHTML(rUnrec.html),
+            _rawStudiesHtml:        rStudies.html,
+            _rawUnrecHtml:          rUnrec.html,
+            payloadFindStudies:     rStudies.payload,
+            payloadFindUnrecPrints: rUnrec.payload,
+            currentGroup:           ctx.group,
+            currentFilter:          ctx.stdfilter,
+            locationHref:           location.href,
+            documentCookie:         document.cookie || null,
+            responseStatusStudies:  rStudies.responseStatus,
+            responseLenStudies:     rStudies.responseLength,
+            responsePreviewStudies: rStudies.responsePreview,
+            _contextSources:        ctx._sources,
           });
         } catch (err) {
           sendResponse({ ok: false, error: err.message });
