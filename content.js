@@ -181,32 +181,57 @@ function parseTableRows(html) {
   return rows;
 }
 
+function _parseTitleFallback(title) {
+  // "415672 - ANA PAULA ... - CR - RX - TORAX - PA - 4416660"
+  // parts[0]=patientId, parts[1]=patientName, parts[2]=modality,
+  // parts[3...-1]=description, parts[-1]=accessionNumber
+  if (!title) return {};
+  const parts = title.split(' - ');
+  if (parts.length < 4) return {};
+  return {
+    patientId:       parts[0].trim(),
+    patientName:     parts[1].trim(),
+    modality:        parts[2].trim(),
+    description:     parts.slice(3, parts.length - 1).join(' - ').trim(),
+    accessionNumber: parts[parts.length - 1].trim(),
+  };
+}
+
 function parseStudiesHTML(html) {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const items = doc.querySelectorAll('.study-item');
   if (!items.length) return [];
 
-  const text = (el, sel) => el.querySelector(sel)?.textContent.trim() || null;
-  const data = (el, key) => el.dataset[key] || el.dataset[key.toLowerCase()] || null;
+  const t = (el, sel) => el.querySelector(sel)?.textContent.trim() || null;
 
   return Array.from(items).map(item => {
-    const statusClass = Array.from(item.classList)
-      .filter(c => c !== 'study-item').join(' ') || null;
+    const title      = item.getAttribute('title');
+    const fallback   = _parseTitleFallback(title);
 
-    const onclickRaw = item.getAttribute('onclick') ||
-      item.querySelector('[onclick]')?.getAttribute('onclick') || null;
+    // Status vem do elemento filho .study-item-status
+    const statusEl    = item.querySelector('.study-item-status');
+    const statusClass = statusEl
+      ? Array.from(statusEl.classList).filter(c => c !== 'study-item-status').join(' ') || null
+      : null;
+
+    const patientId       = t(item, '.study-item-patid')   ?? fallback.patientId       ?? null;
+    const patientName     = t(item, '.study-item-patname') ?? fallback.patientName     ?? null;
+    const datetime        = t(item, '.study-item-datetime')                              ?? null;
+    const modality        = t(item, '.study-item-modality') ?? fallback.modality        ?? null;
+    const description     = t(item, '.study-item-stddesc')  ?? fallback.description     ?? null;
+    const accessionNumber = t(item, '.study-item-accnum')   ?? fallback.accessionNumber ?? null;
 
     return {
-      patientId:       data(item,'patientId')       || text(item, '.patient-id, [class*="patient-id"]'),
-      patientName:     data(item,'patientName')      || text(item, '.patient-name, [class*="patient-name"]') || item.getAttribute('title'),
-      datetime:        data(item,'datetime')         || text(item, '.datetime, .date, [class*="date"]'),
-      modality:        data(item,'modality')         || text(item, '.modality, [class*="modality"]'),
-      description:     data(item,'description')      || text(item, '.description, .study-desc, [class*="desc"]'),
-      accessionNumber: data(item,'accessionNumber')  || text(item, '.accession, [class*="accession"]'),
+      patientId,
+      patientName,
+      datetime,
+      modality,
+      description,
+      accessionNumber,
       statusClass,
-      onclick:         onclickRaw,
-      title:           item.getAttribute('title'),
-      _rawHtml:        item.outerHTML,
+      onclick: item.getAttribute('onclick'),
+      title,
+      _rawHtml: item.outerHTML,
     };
   });
 }
