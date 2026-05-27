@@ -112,12 +112,16 @@ function capturePageContext() {
 
 // Retorna { html, payload, responseStatus, responseLength, responsePreview }
 async function postAction(action, ctx) {
-  const params = new URLSearchParams({ action });
-  if (ctx.sessionid) params.set('sessionid', ctx.sessionid);
-  if (ctx.group)     params.set('group',     ctx.group);
-  if (ctx.stdfilter) params.set('stdfilter', ctx.stdfilter);
-  if (ctx.sourceaet) params.set('sourceaet', ctx.sourceaet);
-  if (ctx.aesource)  params.set('aesource',  ctx.aesource);
+  // Ordem e campos idênticos ao cURL funcional confirmado:
+  // cmd=DprintMI&sessionid=...&action=...&sourceaet=&group=RAIOX&aesource=&stdfilter=RELEASETODAY
+  const params = new URLSearchParams();
+  params.set('cmd',       'DprintMI');
+  params.set('sessionid', ctx.sessionid || '');
+  params.set('action',    action);
+  params.set('sourceaet', ctx.sourceaet || '');
+  params.set('group',     ctx.group     || '');
+  params.set('aesource',  ctx.aesource  || '');
+  params.set('stdfilter', ctx.stdfilter || 'RELEASETODAY');
 
   const payload = params.toString();
 
@@ -171,6 +175,40 @@ function parseTableRows(html) {
 }
 
 function parseStudiesHTML(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
+  // Tenta .study-item primeiro (formato confirmado pelo cURL)
+  const studyItems = doc.querySelectorAll('.study-item');
+  if (studyItems.length) {
+    return Array.from(studyItems).map(item => {
+      const onclick = {};
+      [item, ...item.querySelectorAll('[onclick]')].forEach(node => {
+        const oc = node.getAttribute('onclick');
+        if (!oc) return;
+        const fn = oc.match(/^([a-zA-Z_]\w*)\s*\(/)?.[1];
+        if (fn) onclick[fn] = extractOnclickArgs(oc);
+      });
+      const cells = Array.from(item.querySelectorAll('td, [class^="col"], span[class], div[class]'))
+        .map(el => el.textContent.trim()).filter(Boolean);
+      const text = cells.length ? cells : [item.textContent.trim()];
+      const [patientId, patientName, studyId, modality, studyDescription, accessionNumber, status, ...extra] = text;
+      return {
+        patientId:        patientId        ?? null,
+        patientName:      patientName      ?? null,
+        studyId:          studyId          ?? null,
+        modality:         modality         ?? null,
+        studyDescription: studyDescription ?? null,
+        accessionNumber:  accessionNumber  ?? null,
+        status:           status           ?? null,
+        getStdPrints:     onclick.getStdPrints ?? null,
+        associate:        onclick.associate    ?? null,
+        _extra:           extra.length ? extra : undefined,
+        _rawCells:        text,
+      };
+    });
+  }
+
+  // Fallback: linhas de tabela (<tr>/<td>)
   return parseTableRows(html).map(row => {
     const [patientId, patientName, studyId, modality, studyDescription, accessionNumber, status, ...extra] = row.cells;
     return {
