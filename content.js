@@ -229,7 +229,8 @@ function parseStudiesHTML(html) {
       description,
       accessionNumber,
       statusClass,
-      onclick: item.getAttribute('onclick'),
+      onclick:          item.getAttribute('onclick'),
+      associateOnclick: statusEl?.getAttribute('onclick') || null,
       title,
       _rawHtml: item.outerHTML,
     };
