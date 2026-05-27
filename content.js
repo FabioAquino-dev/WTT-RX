@@ -279,22 +279,17 @@ let _pipeline = {
   manualStudy: null,   // study explicitly selected by user in Level 2
 };
 
+let _logEntries = []; // { time, text, type }
+let _logFilter  = 'all';
+let _logPaused  = false;
+
 // ── Panel CSS (injected into Shadow DOM) ───────────────────────────────────────
 const PANEL_CSS = `<style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* ── Resize handle wrapper (contains handles + panel) ── */
-#wttrx-resize-wrap {
-  position: relative;
-  width: 100%;
-  height: 100%;
-}
+#wttrx-resize-wrap { position: relative; width: 100%; height: 100%; }
 
-/* ── Resize handles — 4 edges + 4 corners ── */
-.rh {
-  position: absolute;
-  z-index: 10;
-}
+.rh { position: absolute; z-index: 10; }
 .rh--n  { top: -4px;    left: 8px;    right: 8px;   height: 8px;  cursor: n-resize;  }
 .rh--s  { bottom: -4px; left: 8px;    right: 8px;   height: 8px;  cursor: s-resize;  }
 .rh--e  { top: 8px;     right: -4px;  bottom: 8px;  width: 8px;   cursor: e-resize;  }
@@ -305,380 +300,275 @@ const PANEL_CSS = `<style>
 .rh--sw { bottom: -6px; left: -6px;   width: 14px;  height: 14px; cursor: sw-resize; }
 
 #wttrx-panel {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  font-size: 12px;
-  color: #c9d1d9;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0,0,0,.75);
+  font-size: 12px; color: #c9d1d9;
+  background: #0d1117; border: 1px solid #30363d;
+  border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,.75);
   overflow: hidden;
 }
 
-/* ── Header / drag handle ── */
+/* ── Header ── */
 #wttrx-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  height: 36px;
-  background: #161b22;
-  border-bottom: 1px solid #21262d;
-  cursor: grab;
-  user-select: none;
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 8px; height: 36px; min-height: 36px;
+  background: #161b22; border-bottom: 1px solid #21262d;
+  cursor: grab; user-select: none; flex-shrink: 0;
 }
 #wttrx-header:active { cursor: grabbing; }
 
 .panel-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .07em;
-  color: #1e9af5;
-  pointer-events: none;
+  font-size: 11px; font-weight: 700; letter-spacing: .07em;
+  color: #1e9af5; pointer-events: none; flex-shrink: 0;
 }
 
-/* ── Status pill ── */
 .status-pill {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1;
-  pointer-events: none;
+  display: flex; align-items: center; gap: 4px;
+  flex: 1; pointer-events: none; min-width: 0;
 }
 
 .sdot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #484f58;
-  flex-shrink: 0;
-  transition: background .2s;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #484f58; flex-shrink: 0; transition: background .2s;
 }
-.sdot--ativo  { background: #3fb950; }
-.sdot--lendo  { background: #58a6ff; animation: blink 1s ease-in-out infinite; }
-.sdot--erro   { background: #da3633; }
+.sdot--ativo { background: #3fb950; }
+.sdot--lendo { background: #58a6ff; animation: blink 1s ease-in-out infinite; }
+.sdot--erro  { background: #da3633; }
 
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
 
-.slabel {
-  font-size: 10px;
-  color: #8b949e;
-}
+.slabel { font-size: 10px; color: #8b949e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* ── Control buttons ── */
+.pipe-badge {
+  font-size: 9px; font-weight: 700; padding: 1px 5px;
+  border-radius: 8px; flex-shrink: 0; display: none;
+}
+.pipe-badge.visible          { display: inline-block; }
+.pipe-badge--loading         { background: #161b22; color: #8b949e; animation: blink 1s ease-in-out infinite; }
+.pipe-badge--matched         { background: #1a3a2a; color: #3fb950; }
+.pipe-badge--nomatch         { background: #2d2a10; color: #d29922; }
+.pipe-badge--manual          { background: #1a2033; color: #58a6ff; }
+.pipe-badge--error           { background: #2d1515; color: #f85149; }
+
 .ctrl {
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: #484f58;
-  cursor: pointer;
-  border-radius: 4px;
-  font-size: 16px;
-  line-height: 1;
-  transition: background .15s, color .15s;
-  flex-shrink: 0;
+  width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: #484f58; cursor: pointer;
+  border-radius: 4px; font-size: 16px; line-height: 1;
+  transition: background .15s, color .15s; flex-shrink: 0;
 }
-.ctrl:hover            { background: #21262d; color: #c9d1d9; }
-.ctrl--close:hover     { background: #6e2525; color: #f85149; }
+.ctrl:hover        { background: #21262d; color: #c9d1d9; }
+.ctrl--close:hover { background: #6e2525; color: #f85149; }
 
-/* ── Body ── */
-#wttrx-body {
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  overflow-y: auto;
-  flex: 1;
-  min-height: 0; /* required for flex overflow */
+/* ── Fixed actions section ── */
+#wttrx-actions {
+  padding: 8px 10px 6px; border-bottom: 1px solid #21262d;
+  display: flex; flex-direction: column; gap: 5px; flex-shrink: 0;
 }
 
-#wttrx-body::-webkit-scrollbar       { width: 4px; }
-#wttrx-body::-webkit-scrollbar-track { background: transparent; }
-#wttrx-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
-#wttrx-body::-webkit-scrollbar-thumb:hover { background: #484f58; }
-
-/* ── Action buttons ── */
-.panel-actions { display: flex; flex-direction: column; gap: 5px; }
-
-.pbtn {
-  width: 100%;
-  padding: 6px 10px;
-  border-radius: 5px;
-  border: 1px solid transparent;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  text-align: left;
-  transition: filter .15s, background .15s, opacity .15s;
+/* ── Tabs bar ── */
+#wttrx-tabs-bar {
+  display: flex; border-bottom: 1px solid #21262d;
+  flex-shrink: 0; background: #161b22;
 }
-.pbtn:disabled { opacity: .35; cursor: not-allowed; }
-
-.pbtn--primary   { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-.pbtn--primary:not(:disabled):hover   { filter: brightness(1.12); }
-
-.pbtn--secondary { background: #21262d; color: #c9d1d9; border-color: #30363d; }
-.pbtn--secondary:not(:disabled):hover { background: #2d333b; }
-
-.pbtn--ghost { background: transparent; color: #8b949e; border-color: #21262d; }
-.pbtn--ghost:not(:disabled):hover { color: #c9d1d9; border-color: #30363d; }
-
-/* ── Log area ── */
-.log-box {
-  background: #010409;
-  border: 1px solid #21262d;
-  border-radius: 5px;
-  padding: 6px 8px;
-  max-height: 150px;
-  overflow-y: auto;
-  min-height: 32px;
+.tab-btn {
+  flex: 1; padding: 5px 0; background: transparent;
+  border: none; border-bottom: 2px solid transparent;
+  color: #8b949e; font-size: 11px; font-weight: 500;
+  cursor: pointer; transition: color .12s, border-color .12s;
 }
+.tab-btn:hover   { color: #c9d1d9; }
+.tab-btn--active { color: #1e9af5; border-bottom-color: #1e9af5; font-weight: 600; }
 
-.log-empty {
-  font-size: 10px;
-  color: #484f58;
-  text-align: center;
-  padding: 2px 0;
+/* ── Tab content area ── */
+#wttrx-tab-content {
+  flex: 1; min-height: 0; position: relative; overflow: hidden;
 }
+.tab-panel {
+  position: absolute; inset: 0; overflow-y: auto;
+  padding: 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.tab-panel::-webkit-scrollbar       { width: 4px; }
+.tab-panel::-webkit-scrollbar-track { background: transparent; }
+.tab-panel::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+.tab-panel::-webkit-scrollbar-thumb:hover { background: #484f58; }
+.tab-panel--hidden { display: none; }
 
-.log-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.tab-empty { font-size: 11px; color: #484f58; text-align: center; padding: 20px 0; }
+
+/* ── Logs tab: toolbar fixed, list scrollable ── */
+#wttrx-tab-logs { overflow-y: hidden; padding: 0; gap: 0; }
+
+.log-toolbar {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 6px 10px; border-bottom: 1px solid #21262d; flex-shrink: 0;
 }
+.log-ctrl {
+  width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  border: none; background: #21262d; color: #8b949e; cursor: pointer;
+  border-radius: 4px; font-size: 11px; transition: background .12s, color .12s; flex-shrink: 0;
+}
+.log-ctrl:hover   { background: #30363d; color: #c9d1d9; }
+.log-ctrl--active { background: #1f6feb33; color: #58a6ff; }
+
+.log-filters { display: flex; gap: 3px; margin-left: auto; flex-wrap: wrap; }
+
+.log-filter {
+  padding: 1px 6px; border: 1px solid #30363d; border-radius: 10px;
+  background: transparent; color: #8b949e; font-size: 9px; font-weight: 600;
+  cursor: pointer; transition: all .12s;
+}
+.log-filter:hover        { background: #21262d; color: #c9d1d9; }
+.log-filter--active      { background: #1f6feb22; border-color: #1f6feb; color: #58a6ff; }
+.log-filter--warn-active { background: #d2992222; border-color: #d29922; color: #d29922; }
+.log-filter--err-active  { background: #f8514922; border-color: #f85149; color: #f85149; }
+.log-filter--ok-active   { background: #3fb95022; border-color: #3fb950; color: #3fb950; }
+
+.log-full {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 6px 10px; list-style: none;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.log-full::-webkit-scrollbar       { width: 4px; }
+.log-full::-webkit-scrollbar-track { background: transparent; }
+.log-full::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+.log-full::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+.log-full-empty { font-size: 10px; color: #484f58; text-align: center; padding: 10px 0; }
 
 .log-entry {
-  font-size: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #8b949e;
-  line-height: 1.45;
-  word-break: break-word;
+  font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #8b949e; line-height: 1.45; word-break: break-word;
 }
 .log-entry--success { color: #3fb950; }
 .log-entry--error   { color: #f85149; }
 .log-entry--warn    { color: #d29922; }
 
-/* ── Studies list ── */
+/* ── Footer ── */
+#wttrx-footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; height: 22px; min-height: 22px;
+  background: #0d1117; border-top: 1px solid #21262d;
+  flex-shrink: 0; gap: 6px;
+}
+.footer-log {
+  font-size: 9px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #484f58; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.footer-stage { font-size: 9px; font-weight: 700; color: #484f58; letter-spacing: .05em; flex-shrink: 0; }
+
+/* ── Minimized: only header visible ── */
+#wttrx-panel.is-minimized #wttrx-actions,
+#wttrx-panel.is-minimized #wttrx-tabs-bar,
+#wttrx-panel.is-minimized #wttrx-tab-content,
+#wttrx-panel.is-minimized #wttrx-footer { display: none; }
+
+/* ── Action buttons ── */
+.panel-actions { display: flex; gap: 4px; }
+.pbtn {
+  flex: 1; padding: 5px 4px; border-radius: 5px; border: 1px solid transparent;
+  font-size: 10px; font-weight: 500; cursor: pointer; text-align: center;
+  transition: filter .15s, background .15s, opacity .15s;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pbtn:disabled { opacity: .35; cursor: not-allowed; }
+.pbtn--primary   { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+.pbtn--primary:not(:disabled):hover   { filter: brightness(1.12); }
+.pbtn--secondary { background: #21262d; color: #c9d1d9; border-color: #30363d; }
+.pbtn--secondary:not(:disabled):hover { background: #2d333b; }
+.pbtn--ghost { background: transparent; color: #8b949e; border-color: #21262d; }
+.pbtn--ghost:not(:disabled):hover { color: #c9d1d9; border-color: #30363d; }
+
+/* ── Group row ── */
+.group-row { display: flex; align-items: center; gap: 5px; }
+.group-label { font-size: 10px; color: #8b949e; flex-shrink: 0; }
+.group-input {
+  flex: 1; background: #010409; border: 1px solid #30363d; border-radius: 4px;
+  color: #c9d1d9; font-size: 11px; font-family: ui-monospace, SFMono-Regular, monospace;
+  padding: 3px 6px; outline: none; text-transform: uppercase;
+}
+.group-input:focus { border-color: #1f6feb; }
+.group-input.saved { border-color: #238636; }
+
+/* ── Section labels ── */
 .section-label {
-  font-size: 10px;
-  font-weight: 600;
-  color: #484f58;
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  margin-bottom: 4px;
+  font-size: 10px; font-weight: 600; color: #484f58;
+  text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px;
 }
+.section-label--unrec { color: #d29922; }
 
-.studies-scroll {
-  max-height: 200px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-right: 2px;
-}
+/* ── Studies scroll ── */
+.studies-scroll { display: flex; flex-direction: column; gap: 2px; }
 
-/* scrollbar premium */
-.studies-scroll::-webkit-scrollbar       { width: 4px; }
-.studies-scroll::-webkit-scrollbar-track { background: transparent; }
-.studies-scroll::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
-.studies-scroll::-webkit-scrollbar-thumb:hover { background: #484f58; }
-
+/* ── Study cards ── */
 .study-card {
-  background: #161b22;
-  border: 1px solid #21262d;
-  border-radius: 4px;
-  padding: 4px 7px;
-  cursor: pointer;
-  transition: border-color .12s, background .12s;
-  user-select: none;
+  background: #161b22; border: 1px solid #21262d; border-radius: 4px;
+  padding: 4px 7px; cursor: pointer; transition: border-color .12s, background .12s; user-select: none;
 }
-.study-card:hover {
-  border-color: #388bfd;
-  background: #1c2333;
-}
-.study-card--active {
-  border-color: #1f6feb;
-  background: #0d2044;
-  box-shadow: 0 0 0 1px #1f6feb22;
-}
+.study-card:hover     { border-color: #388bfd; background: #1c2333; }
+.study-card--active   { border-color: #1f6feb; background: #0d2044; box-shadow: 0 0 0 1px #1f6feb22; }
+.study-card--selected { border-color: #1f6feb; background: #0d1e36; }
 
 .study-card__name {
-  font-size: 11px;
-  font-weight: 600;
-  color: #c9d1d9;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.3;
+  font-size: 11px; font-weight: 600; color: #c9d1d9;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3;
 }
-
 .study-card__meta {
-  font-size: 10px;
-  color: #8b949e;
-  margin-top: 1px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 10px; color: #8b949e; margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-
 .study-card__status {
-  display: inline-block;
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 10px;
-  margin-top: 3px;
-  font-weight: 500;
+  display: inline-block; font-size: 9px; padding: 1px 5px;
+  border-radius: 10px; margin-top: 3px; font-weight: 500;
 }
 .study-card__status.status-empty   { background: #21262d; color: #8b949e; }
 .study-card__status.status-toaprov { background: #1a3a2a; color: #3fb950; }
 
 /* ── Unrec cards ── */
-.section-label--unrec { color: #d29922; }
-
 .unrec-card {
-  background: #161b22;
-  border: 1px solid #21262d;
-  border-radius: 4px;
-  padding: 5px 7px;
-  cursor: pointer;
-  transition: border-color .12s, background .12s;
-  user-select: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  background: #161b22; border: 1px solid #21262d; border-radius: 4px;
+  padding: 5px 7px; cursor: pointer; transition: border-color .12s, background .12s;
+  user-select: none; display: flex; align-items: center; justify-content: space-between; gap: 6px;
 }
-.unrec-card:hover {
-  border-color: #d29922;
-  background: #1c1a0e;
-}
-.unrec-card--active {
-  border-color: #d29922;
-  background: #1c1a0e;
-  box-shadow: 0 0 0 1px #d2992222;
-}
+.unrec-card:hover   { border-color: #d29922; background: #1c1a0e; }
+.unrec-card--active { border-color: #d29922; background: #1c1a0e; box-shadow: 0 0 0 1px #d2992222; }
 
 .unrec-card__aetitle {
-  font-size: 11px;
-  font-weight: 600;
-  color: #c9d1d9;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
+  font-size: 11px; font-weight: 600; color: #c9d1d9;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
 }
-
-.unrec-card__datetime {
-  font-size: 10px;
-  color: #8b949e;
-  flex-shrink: 0;
-}
-
+.unrec-card__datetime { font-size: 10px; color: #8b949e; flex-shrink: 0; }
 .unrec-card__status {
-  display: inline-block;
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 10px;
-  font-weight: 500;
-  flex-shrink: 0;
+  display: inline-block; font-size: 9px; padding: 1px 5px;
+  border-radius: 10px; font-weight: 500; flex-shrink: 0;
 }
-.unrec-card__status.status-unrec  { background: #2d1f0e; color: #d29922; }
-.unrec-card__status.status-torec  { background: #0d2a1a; color: #3fb950; }
+.unrec-card__status.status-unrec { background: #2d1f0e; color: #d29922; }
+.unrec-card__status.status-torec { background: #0d2a1a; color: #3fb950; }
 
-/* ── Group config row ── */
-.group-row {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.group-label {
-  font-size: 10px;
-  color: #8b949e;
-  flex-shrink: 0;
-}
-
-.group-input {
-  flex: 1;
-  background: #010409;
-  border: 1px solid #30363d;
-  border-radius: 4px;
-  color: #c9d1d9;
-  font-size: 11px;
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  padding: 3px 6px;
-  outline: none;
-  text-transform: uppercase;
-}
-.group-input:focus { border-color: #1f6feb; }
-.group-input.saved  { border-color: #238636; }
-
-/* ── Selection state (manual mode) ── */
-.study-card--selected  { border-color: #1f6feb; background: #0d1e36; }
-.unrec-card--active    { border-color: #d29922; background: #1c1a0e; }
-
-/* ── Association confirmation panel ── */
+/* ── Association panel ── */
 #wttrx-assoc-panel {
-  border: 1px solid #1f6feb;
-  border-radius: 6px;
-  background: #0d1117;
-  padding: 8px;
-  display: none;
-  flex-direction: column;
-  gap: 5px;
+  border: 1px solid #1f6feb; border-radius: 6px;
+  background: #0d1117; padding: 8px;
+  display: none; flex-direction: column; gap: 5px;
 }
 #wttrx-assoc-panel.visible { display: flex; }
+
 .assoc-section__label {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #8b949e;
-  margin-bottom: 1px;
+  font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.05em; color: #8b949e; margin-bottom: 1px;
 }
 .assoc-section__value {
-  font-size: 11px;
-  font-weight: 600;
-  color: #c9d1d9;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 11px; font-weight: 600; color: #c9d1d9;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .assoc-section__meta {
-  font-size: 10px;
-  color: #8b949e;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 10px; color: #8b949e;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.assoc-divider {
-  text-align: center;
-  font-size: 10px;
-  color: #8b949e;
-  padding: 1px 0;
-}
+.assoc-divider { text-align: center; font-size: 10px; color: #8b949e; padding: 1px 0; }
 
-/* ── Confidence / level badge ── */
-.assoc-badge {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-  margin-top: 3px;
-  flex-wrap: wrap;
-}
-.assoc-tag {
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 10px;
-  font-weight: 600;
-}
+.assoc-badge { display: inline-flex; gap: 4px; align-items: center; margin-top: 3px; flex-wrap: wrap; }
+.assoc-tag { font-size: 9px; padding: 1px 5px; border-radius: 10px; font-weight: 600; }
 .assoc-tag--high    { background: #1a3a2a; color: #3fb950; }
 .assoc-tag--medium  { background: #2d2a10; color: #d29922; }
 .assoc-tag--manual  { background: #1a2033; color: #58a6ff; }
@@ -687,19 +577,13 @@ const PANEL_CSS = `<style>
 .assoc-tag--ocr     { background: #1f1030; color: #bc8cff; }
 
 .assoc-btn {
-  width: 100%;
-  padding: 5px;
-  background: #1f6feb;
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
-  margin-top: 2px;
+  width: 100%; padding: 5px; background: #1f6feb; color: #fff;
+  border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; margin-top: 2px;
 }
 .assoc-btn:hover:not(:disabled) { background: #388bfd; }
 .assoc-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.assoc-hint { font-size: 11px; color: #484f58; text-align: center; padding: 20px 0; }
 </style>`;
 
 // ── Panel HTML ─────────────────────────────────────────────────────────────────
@@ -713,55 +597,84 @@ const PANEL_HTML = `
   <div class="rh rh--nw" data-dir="nw"></div>
   <div class="rh rh--se" data-dir="se"></div>
   <div class="rh rh--sw" data-dir="sw"></div>
-<div id="wttrx-panel">
-  <div id="wttrx-header">
-    <span class="panel-title">WTT-RX</span>
-    <div class="status-pill">
-      <span class="sdot" id="wttrx-sdot"></span>
-      <span class="slabel" id="wttrx-slabel">Parado</span>
-    </div>
-    <button class="ctrl"          id="wttrx-min"   title="Minimizar">−</button>
-    <button class="ctrl ctrl--close" id="wttrx-close" title="Fechar">×</button>
-  </div>
-  <div id="wttrx-body">
-    <div class="group-row">
-      <span class="group-label">Grupo:</span>
-      <input class="group-input" id="wttrx-group-input" type="text" placeholder="ex: RAIOX" maxlength="32" autocomplete="off" spellcheck="false" />
-    </div>
-    <div class="panel-actions">
-      <button class="pbtn pbtn--primary"   id="wttrx-btn-studies">Ler exames reconhecidos</button>
-      <button class="pbtn pbtn--secondary" id="wttrx-btn-unrec"  >Ler não reconhecidos</button>
-      <button class="pbtn pbtn--ghost"     id="wttrx-btn-export"  disabled>Exportar diagnóstico</button>
-    </div>
-    <div id="wttrx-studies-wrap" style="display:none;">
-      <div class="section-label">Exames (<span id="wttrx-studies-count">0</span>)</div>
-      <div class="studies-scroll" id="wttrx-studies-list"></div>
-    </div>
-    <div id="wttrx-unrec-wrap" style="display:none;">
-      <div class="section-label section-label--unrec">Não reconhecidos (<span id="wttrx-unrec-count">0</span>)</div>
-      <div class="studies-scroll" id="wttrx-unrec-list"></div>
-    </div>
-    <div id="wttrx-assoc-panel">
-      <div>
-        <div class="assoc-section__label">Não reconhecido</div>
-        <div class="assoc-section__value" id="wttrx-assoc-unrec-title">— clique em um não reconhecido</div>
-        <div class="assoc-section__meta"  id="wttrx-assoc-unrec-meta"></div>
+  <div id="wttrx-panel">
+    <div id="wttrx-header">
+      <span class="panel-title">WTT-RX</span>
+      <div class="status-pill">
+        <span class="sdot" id="wttrx-sdot"></span>
+        <span class="slabel" id="wttrx-slabel">Parado</span>
       </div>
-      <div class="assoc-divider">↓ associar a ↓</div>
-      <div>
-        <div class="assoc-section__label">Correspondência</div>
-        <div class="assoc-section__value" id="wttrx-assoc-study-title">—</div>
-        <div class="assoc-section__meta"  id="wttrx-assoc-study-meta"></div>
-        <div class="assoc-badge"          id="wttrx-assoc-badges"></div>
-      </div>
-      <button class="assoc-btn" id="wttrx-btn-associate" disabled>Associar automaticamente</button>
+      <span class="pipe-badge" id="wttrx-pipe-badge"></span>
+      <button class="ctrl"             id="wttrx-min"   title="Minimizar">−</button>
+      <button class="ctrl ctrl--close" id="wttrx-close" title="Fechar">×</button>
     </div>
-    <div class="log-box">
-      <p class="log-empty" id="wttrx-log-empty">Nenhuma atividade ainda.</p>
-      <ul class="log-list" id="wttrx-log-list" style="display:none;"></ul>
+    <div id="wttrx-actions">
+      <div class="group-row">
+        <span class="group-label">Grupo:</span>
+        <input class="group-input" id="wttrx-group-input" type="text" placeholder="ex: RAIOX" maxlength="32" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="panel-actions">
+        <button class="pbtn pbtn--primary"   id="wttrx-btn-studies">Reconhecidos</button>
+        <button class="pbtn pbtn--secondary" id="wttrx-btn-unrec"  >Não reconhecidos</button>
+        <button class="pbtn pbtn--ghost"     id="wttrx-btn-export"  disabled>Exportar</button>
+      </div>
+    </div>
+    <div id="wttrx-tabs-bar">
+      <button class="tab-btn tab-btn--active" data-tab="exames">Exames</button>
+      <button class="tab-btn" data-tab="assoc">Associação</button>
+      <button class="tab-btn" data-tab="logs">Logs</button>
+    </div>
+    <div id="wttrx-tab-content">
+      <div class="tab-panel" id="wttrx-tab-exames">
+        <p class="tab-empty" id="wttrx-exames-empty">Nenhum exame carregado. Use os botões acima.</p>
+        <div id="wttrx-studies-wrap" style="display:none;">
+          <div class="section-label">Exames (<span id="wttrx-studies-count">0</span>)</div>
+          <div class="studies-scroll" id="wttrx-studies-list"></div>
+        </div>
+        <div id="wttrx-unrec-wrap" style="display:none;">
+          <div class="section-label section-label--unrec">Não reconhecidos (<span id="wttrx-unrec-count">0</span>)</div>
+          <div class="studies-scroll" id="wttrx-unrec-list"></div>
+        </div>
+      </div>
+      <div class="tab-panel tab-panel--hidden" id="wttrx-tab-assoc">
+        <p class="assoc-hint" id="wttrx-assoc-hint">Clique em um exame não reconhecido na aba Exames.</p>
+        <div id="wttrx-assoc-panel">
+          <div>
+            <div class="assoc-section__label">Não reconhecido</div>
+            <div class="assoc-section__value" id="wttrx-assoc-unrec-title">—</div>
+            <div class="assoc-section__meta"  id="wttrx-assoc-unrec-meta"></div>
+          </div>
+          <div class="assoc-divider">↓ associar a ↓</div>
+          <div>
+            <div class="assoc-section__label">Correspondência</div>
+            <div class="assoc-section__value" id="wttrx-assoc-study-title">—</div>
+            <div class="assoc-section__meta"  id="wttrx-assoc-study-meta"></div>
+            <div class="assoc-badge"          id="wttrx-assoc-badges"></div>
+          </div>
+          <button class="assoc-btn" id="wttrx-btn-associate" disabled>Associar automaticamente</button>
+        </div>
+      </div>
+      <div class="tab-panel tab-panel--hidden" id="wttrx-tab-logs">
+        <div class="log-toolbar">
+          <button class="log-ctrl" id="wttrx-log-pause" title="Pausar scroll">⏸</button>
+          <button class="log-ctrl" id="wttrx-log-copy"  title="Copiar logs">⎘</button>
+          <button class="log-ctrl" id="wttrx-log-clear" title="Limpar logs">✕</button>
+          <div class="log-filters">
+            <button class="log-filter log-filter--active" data-filter="all">TUDO</button>
+            <button class="log-filter" data-filter="info">INFO</button>
+            <button class="log-filter" data-filter="warn">WARN</button>
+            <button class="log-filter" data-filter="error">ERROR</button>
+            <button class="log-filter" data-filter="success">OK</button>
+          </div>
+        </div>
+        <ul class="log-full" id="wttrx-log-full"></ul>
+      </div>
+    </div>
+    <div id="wttrx-footer">
+      <span class="footer-log"   id="wttrx-footer-log">—</span>
+      <span class="footer-stage" id="wttrx-footer-stage">IDLE</span>
     </div>
   </div>
-</div>
 </div>`;
 
 // Executa código no contexto MAIN da página via background service worker.
@@ -799,23 +712,29 @@ function createPanel() {
   _panel = {
     host,
     shadow,
-    minimized: false,
-    lastData:  null,
+    minimized:   false,
+    maximized:   false,
+    savedHeight: null,
+    savedRect:   null,
+    activeTab:   _st?.activeTab ?? 'exames',
+    lastData:    null,
     refs: {
-      body:          shadow.querySelector('#wttrx-body'),
-      sdot:          shadow.querySelector('#wttrx-sdot'),
-      slabel:        shadow.querySelector('#wttrx-slabel'),
-      logEmpty:      shadow.querySelector('#wttrx-log-empty'),
-      logList:       shadow.querySelector('#wttrx-log-list'),
-      btnMin:        shadow.querySelector('#wttrx-min'),
-      btnExport:     shadow.querySelector('#wttrx-btn-export'),
-      studiesWrap:   shadow.querySelector('#wttrx-studies-wrap'),
-      studiesList:   shadow.querySelector('#wttrx-studies-list'),
-      studiesCount:  shadow.querySelector('#wttrx-studies-count'),
-      unrecWrap:     shadow.querySelector('#wttrx-unrec-wrap'),
-      unrecList:     shadow.querySelector('#wttrx-unrec-list'),
+      sdot:            shadow.querySelector('#wttrx-sdot'),
+      slabel:          shadow.querySelector('#wttrx-slabel'),
+      pipeBadge:       shadow.querySelector('#wttrx-pipe-badge'),
+      btnMin:          shadow.querySelector('#wttrx-min'),
+      btnExport:       shadow.querySelector('#wttrx-btn-export'),
+      tabBtns:         shadow.querySelectorAll('.tab-btn'),
+      tabPanels:       shadow.querySelectorAll('.tab-panel'),
+      studiesWrap:     shadow.querySelector('#wttrx-studies-wrap'),
+      studiesList:     shadow.querySelector('#wttrx-studies-list'),
+      studiesCount:    shadow.querySelector('#wttrx-studies-count'),
+      unrecWrap:       shadow.querySelector('#wttrx-unrec-wrap'),
+      unrecList:       shadow.querySelector('#wttrx-unrec-list'),
       unrecCount:      shadow.querySelector('#wttrx-unrec-count'),
+      examesEmpty:     shadow.querySelector('#wttrx-exames-empty'),
       assocPanel:      shadow.querySelector('#wttrx-assoc-panel'),
+      assocHint:       shadow.querySelector('#wttrx-assoc-hint'),
       assocBtnDo:      shadow.querySelector('#wttrx-btn-associate'),
       assocUnrecTitle: shadow.querySelector('#wttrx-assoc-unrec-title'),
       assocUnrecMeta:  shadow.querySelector('#wttrx-assoc-unrec-meta'),
@@ -823,15 +742,17 @@ function createPanel() {
       assocStudyMeta:  shadow.querySelector('#wttrx-assoc-study-meta'),
       assocBadges:     shadow.querySelector('#wttrx-assoc-badges'),
       groupInput:      shadow.querySelector('#wttrx-group-input'),
+      logFull:         shadow.querySelector('#wttrx-log-full'),
+      footerLog:       shadow.querySelector('#wttrx-footer-log'),
+      footerStage:     shadow.querySelector('#wttrx-footer-stage'),
     },
   };
 
-  // Restaura grupo salvo
+  // Restore saved group
   const savedGroup = localStorage.getItem('wttrx_group') || '';
   _panel.refs.groupInput.value = savedGroup;
   if (savedGroup) _panel.refs.groupInput.classList.add('saved');
 
-  // Persiste ao digitar
   _panel.refs.groupInput.addEventListener('input', () => {
     const v = _panel.refs.groupInput.value.trim().toUpperCase();
     _panel.refs.groupInput.value = v;
@@ -839,10 +760,58 @@ function createPanel() {
     _panel.refs.groupInput.classList.toggle('saved', !!v);
   });
 
+  // Tab buttons
+  _panel.refs.tabBtns.forEach(btn => {
+    btn.addEventListener('click', () => activateTab(btn.dataset.tab));
+  });
+
+  // Log toolbar
+  const logPauseBtn = shadow.querySelector('#wttrx-log-pause');
+  logPauseBtn.addEventListener('click', () => {
+    _logPaused = !_logPaused;
+    logPauseBtn.classList.toggle('log-ctrl--active', _logPaused);
+    logPauseBtn.title = _logPaused ? 'Retomar scroll' : 'Pausar scroll';
+  });
+
+  shadow.querySelector('#wttrx-log-copy').addEventListener('click', () => {
+    const filtered = _logFilter === 'all' ? _logEntries : _logEntries.filter(e => e.type === _logFilter);
+    const text = filtered.map(e => `[${e.time}] ${e.text}`).join('\n');
+    navigator.clipboard?.writeText(text).catch(() => {});
+    addLog('Logs copiados para a área de transferência.', 'success');
+  });
+
+  shadow.querySelector('#wttrx-log-clear').addEventListener('click', () => {
+    _logEntries = [];
+    _renderLogList();
+    if (_panel?.refs.footerLog) _panel.refs.footerLog.textContent = '—';
+  });
+
+  // Log filter chips
+  shadow.querySelectorAll('.log-filter').forEach(chip => {
+    chip.addEventListener('click', () => {
+      _logFilter = chip.dataset.filter;
+      const activeClassMap = { all: 'log-filter--active', info: 'log-filter--active', warn: 'log-filter--warn-active', error: 'log-filter--err-active', success: 'log-filter--ok-active' };
+      shadow.querySelectorAll('.log-filter').forEach(c => {
+        c.classList.remove('log-filter--active', 'log-filter--warn-active', 'log-filter--err-active', 'log-filter--ok-active');
+        if (c.dataset.filter === _logFilter) c.classList.add(activeClassMap[_logFilter] || 'log-filter--active');
+      });
+      _renderLogList();
+    });
+  });
+
+  // Header controls
   shadow.querySelector('#wttrx-min').addEventListener('click', () =>
     _panel.minimized ? restorePanel() : minimizePanel()
   );
   shadow.querySelector('#wttrx-close').addEventListener('click', removePanel);
+
+  // Double-click header = maximize / restore
+  shadow.querySelector('#wttrx-header').addEventListener('dblclick', e => {
+    if (e.target.closest('button')) return;
+    if (_panel.minimized) return;
+    _panel.maximized ? restoreFromMaximize() : maximizePanel();
+  });
+
   shadow.querySelector('#wttrx-btn-studies').addEventListener('click', handleReadStudies);
   shadow.querySelector('#wttrx-btn-unrec').addEventListener('click', handleReadUnrec);
   shadow.querySelector('#wttrx-btn-export').addEventListener('click', handleExport);
@@ -851,9 +820,12 @@ function createPanel() {
   makeDraggable(host, shadow.querySelector('#wttrx-header'));
   makeResizable(host, shadow);
   updateStatus('ativo', 'Ativo');
+
+  // Activate saved tab and replay existing log entries
+  activateTab(_panel.activeTab);
+  _renderLogList();
   addLog('Painel WTT-RX iniciado');
 
-  // Restore minimized state from localStorage
   if (_st?.minimized) {
     _panel.savedHeight = _initH;
     minimizePanel();
@@ -869,8 +841,8 @@ function removePanel() {
 function minimizePanel() {
   if (!_panel || _panel.minimized) return;
   _panel.savedHeight = parseInt(_panel.host.style.height, 10) || PANEL_DEFAULTS.height;
-  _panel.host.style.height = '36px'; // header height only
-  _panel.refs.body.style.display = 'none';
+  _panel.host.style.height = '36px';
+  _panel.shadow.querySelector('#wttrx-panel').classList.add('is-minimized');
   _panel.minimized = true;
   _panel.refs.btnMin.textContent = '+';
   _panel.refs.btnMin.title = 'Restaurar';
@@ -880,7 +852,7 @@ function minimizePanel() {
 function restorePanel() {
   if (!_panel || !_panel.minimized) return;
   _panel.host.style.height = (_panel.savedHeight ?? PANEL_DEFAULTS.height) + 'px';
-  _panel.refs.body.style.display = '';
+  _panel.shadow.querySelector('#wttrx-panel').classList.remove('is-minimized');
   _panel.minimized = false;
   _panel.refs.btnMin.textContent = '−';
   _panel.refs.btnMin.title = 'Minimizar';
@@ -900,40 +872,34 @@ function updateStatus(state, text) {
 }
 
 function addLog(text, type = 'info') {
-  if (!_panel) return;
-  const { logEmpty, logList } = _panel.refs;
-
-  logEmpty.style.display = 'none';
-  logList.style.display  = 'flex';
-
   const time = new Date().toLocaleTimeString('pt-BR', {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
+  _logEntries.push({ time, text, type });
+  if (_logEntries.length > 200) _logEntries.shift();
 
-  const li = document.createElement('li');
-  li.className = `log-entry${type !== 'info' ? ` log-entry--${type}` : ''}`;
-  li.textContent = `[${time}] ${text}`;
-  logList.insertBefore(li, logList.firstChild);
+  if (!_panel) return;
 
-  while (logList.children.length > 12) logList.removeChild(logList.lastChild);
+  _panel.refs.footerLog.textContent = `${time} ${text}`;
+  _renderLogList();
 }
 
 // ── Panel state persistence ────────────────────────────────────────────────────
 
-const PANEL_DEFAULTS = { width: 340, height: 520 };
-const PANEL_MIN_W    = 280;
-const PANEL_MIN_H    = 220;
+const PANEL_DEFAULTS = { width: 380, height: 540 };
+const PANEL_MIN_W    = 360;
+const PANEL_MIN_H    = 420;
 
 function _savePanelState(host) {
   localStorage.setItem('wttrx_state', JSON.stringify({
-    left:  parseInt(host.style.left,  10) || 0,
-    top:   parseInt(host.style.top,   10) || 0,
-    // When minimized the host is 36px tall — persist the real height instead
+    left:      parseInt(host.style.left,  10) || 0,
+    top:       parseInt(host.style.top,   10) || 0,
     width:     parseInt(host.style.width, 10) || PANEL_DEFAULTS.width,
     height:    _panel?.minimized
                  ? (_panel.savedHeight ?? PANEL_DEFAULTS.height)
                  : (parseInt(host.style.height, 10) || PANEL_DEFAULTS.height),
     minimized: _panel?.minimized ?? false,
+    activeTab: _panel?.activeTab ?? 'exames',
   }));
 }
 
@@ -943,6 +909,81 @@ function _loadPanelState() {
     if (s && typeof s.width === 'number') return s;
   } catch {}
   return null;
+}
+
+function activateTab(name) {
+  if (!_panel) return;
+  _panel.refs.tabBtns.forEach(btn => {
+    btn.classList.toggle('tab-btn--active', btn.dataset.tab === name);
+  });
+  _panel.refs.tabPanels.forEach(p => {
+    p.classList.toggle('tab-panel--hidden', p.id !== `wttrx-tab-${name}`);
+  });
+  _panel.activeTab = name;
+  _savePanelState(_panel.host);
+}
+
+function maximizePanel() {
+  if (!_panel || _panel.minimized) return;
+  _panel.savedRect = {
+    left:   parseInt(_panel.host.style.left,   10) || 0,
+    top:    parseInt(_panel.host.style.top,    10) || 0,
+    width:  parseInt(_panel.host.style.width,  10) || PANEL_DEFAULTS.width,
+    height: parseInt(_panel.host.style.height, 10) || PANEL_DEFAULTS.height,
+  };
+  const m = 10;
+  _panel.host.style.left   = m + 'px';
+  _panel.host.style.top    = m + 'px';
+  _panel.host.style.width  = (window.innerWidth  - m * 2) + 'px';
+  _panel.host.style.height = (window.innerHeight - m * 2) + 'px';
+  _panel.maximized = true;
+}
+
+function restoreFromMaximize() {
+  if (!_panel || !_panel.maximized) return;
+  const r = _panel.savedRect;
+  if (r) {
+    _panel.host.style.left   = r.left   + 'px';
+    _panel.host.style.top    = r.top    + 'px';
+    _panel.host.style.width  = r.width  + 'px';
+    _panel.host.style.height = r.height + 'px';
+  }
+  _panel.maximized = false;
+  _savePanelState(_panel.host);
+}
+
+function _renderLogList() {
+  if (!_panel?.refs.logFull) return;
+  const ul = _panel.refs.logFull;
+  const entries = _logFilter === 'all'
+    ? _logEntries
+    : _logEntries.filter(e => e.type === _logFilter);
+
+  ul.innerHTML = '';
+
+  if (!entries.length) {
+    const li = document.createElement('li');
+    li.className = 'log-full-empty';
+    li.textContent = _logFilter === 'all' ? 'Nenhuma atividade ainda.' : 'Sem entradas com este filtro.';
+    ul.appendChild(li);
+    return;
+  }
+
+  entries.forEach(e => {
+    const li = document.createElement('li');
+    li.className = `log-entry${e.type !== 'info' ? ` log-entry--${e.type}` : ''}`;
+    li.textContent = `[${e.time}] ${e.text}`;
+    ul.appendChild(li);
+  });
+
+  if (!_logPaused) ul.scrollTop = ul.scrollHeight;
+}
+
+function _updateExamesEmpty() {
+  if (!_panel?.refs.examesEmpty) return;
+  const hasStudies = _panel.refs.studiesWrap.style.display !== 'none';
+  const hasUnrec   = _panel.refs.unrecWrap.style.display   !== 'none';
+  _panel.refs.examesEmpty.style.display = (hasStudies || hasUnrec) ? 'none' : '';
 }
 
 // ── Drag (header) ──────────────────────────────────────────────────────────────
@@ -996,8 +1037,8 @@ function makeResizable(host, shadow) {
       const onMove = e => {
         const dx = e.clientX - startX;
         const dy = e.clientY - startY;
-        const maxW = Math.floor(window.innerWidth  * 0.9);
-        const maxH = Math.floor(window.innerHeight * 0.9);
+        const maxW = Math.floor(window.innerWidth  * 0.95);
+        const maxH = Math.floor(window.innerHeight * 0.95);
 
         let { left, top, width, height } = {
           left:   startRect.left,
@@ -1051,11 +1092,14 @@ function renderStudies(studies) {
 
   if (!studies.length) {
     studiesWrap.style.display = 'none';
+    _updateExamesEmpty();
     return;
   }
 
   studiesCount.textContent = studies.length;
   studiesWrap.style.display = '';
+  _updateExamesEmpty();
+  activateTab('exames');
 
   studies.forEach(s => {
     const card = document.createElement('div');
@@ -1109,11 +1153,14 @@ function renderUnrec(items) {
 
   if (!items.length) {
     unrecWrap.style.display = 'none';
+    _updateExamesEmpty();
     return;
   }
 
   unrecCount.textContent = items.length;
   unrecWrap.style.display = '';
+  _updateExamesEmpty();
+  activateTab('exames');
 
   items.forEach(u => {
     const card = document.createElement('div');
@@ -1334,11 +1381,36 @@ function refreshAssocPanel() {
   const r = _panel.refs;
   const p = _pipeline;
 
+  // Update header pipeline badge
+  const badgeMap = {
+    idle:         null,
+    loading:      ['loading', 'DOM…'],
+    auto_matched: ['matched', p.metaLevel === 'ocr' ? 'OCR ✓' : 'DOM ✓'],
+    no_match:     ['nomatch', 'NO MATCH'],
+    manual_mode:  ['manual',  p.manualStudy ? 'MANUAL ✓' : 'MANUAL'],
+    error:        ['error',   'ERRO'],
+  };
+  const badgeInfo = badgeMap[p.stage];
+  if (badgeInfo) {
+    r.pipeBadge.className  = `pipe-badge visible pipe-badge--${badgeInfo[0]}`;
+    r.pipeBadge.textContent = badgeInfo[1];
+  } else {
+    r.pipeBadge.className  = 'pipe-badge';
+    r.pipeBadge.textContent = '';
+  }
+
+  // Update footer stage
+  r.footerStage.textContent = p.stage.replace('_', ' ').toUpperCase();
+
   if (p.stage === 'idle') {
     r.assocPanel.classList.remove('visible');
+    r.assocHint.style.display = '';
     return;
   }
 
+  // Auto-switch to Associação tab and show assoc panel
+  activateTab('assoc');
+  r.assocHint.style.display = 'none';
   r.assocPanel.classList.add('visible');
 
   // Unrec section
