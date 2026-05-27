@@ -1208,10 +1208,18 @@ let _ocrWorker = null; // reused across calls; terminated after each pipeline ru
 async function _ensureOCRWorker() {
   if (_ocrWorker) return _ocrWorker;
   addLog('OCR: inicializando Tesseract.js…');
+
+  // MV3 content scripts cannot do new Worker(chrome-extension://...) directly —
+  // the isolated world blocks it.  Workaround: fetch the script, create a blob URL,
+  // and pass that to Tesseract with workerBlobURL:false so it calls new Worker(blobURL).
+  const resp      = await fetch(chrome.runtime.getURL('vendor/tesseract.worker.min.js'));
+  const workerSrc = await resp.text();
+  const workerURL = URL.createObjectURL(new Blob([workerSrc], { type: 'application/javascript' }));
+
   _ocrWorker = await Tesseract.createWorker('eng', Tesseract.OEM.LSTM_ONLY, {
     workerBlobURL: false,
-    workerPath:    chrome.runtime.getURL('vendor/tesseract.worker.min.js'),
-    // Core WASM and language data load from CDN inside the extension worker context
+    workerPath:    workerURL,
+    // Core WASM and eng.traineddata load from CDN inside the blob worker
     logger: m => {
       if (m.status === 'recognizing text') {
         const pct = Math.round((m.progress || 0) * 100);
@@ -1219,6 +1227,9 @@ async function _ensureOCRWorker() {
       }
     },
   });
+
+  URL.revokeObjectURL(workerURL); // worker is running, safe to release the creation URL
+
   await _ocrWorker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT });
   addLog('OCR: Tesseract pronto.', 'success');
   return _ocrWorker;
