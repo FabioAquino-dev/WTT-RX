@@ -417,21 +417,38 @@ const PANEL_CSS = `<style>
 }
 
 .studies-scroll {
-  max-height: 180px;
+  max-height: 200px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
+  padding-right: 2px;
 }
+
+/* scrollbar premium */
+.studies-scroll::-webkit-scrollbar       { width: 4px; }
+.studies-scroll::-webkit-scrollbar-track { background: transparent; }
+.studies-scroll::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+.studies-scroll::-webkit-scrollbar-thumb:hover { background: #484f58; }
 
 .study-card {
   background: #161b22;
   border: 1px solid #21262d;
   border-radius: 4px;
-  padding: 5px 7px;
-  cursor: default;
+  padding: 4px 7px;
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+  user-select: none;
 }
-.study-card:hover { border-color: #30363d; }
+.study-card:hover {
+  border-color: #388bfd;
+  background: #1c2333;
+}
+.study-card--active {
+  border-color: #1f6feb;
+  background: #0d2044;
+  box-shadow: 0 0 0 1px #1f6feb22;
+}
 
 .study-card__name {
   font-size: 11px;
@@ -440,6 +457,7 @@ const PANEL_CSS = `<style>
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.3;
 }
 
 .study-card__meta {
@@ -454,12 +472,13 @@ const PANEL_CSS = `<style>
 .study-card__status {
   display: inline-block;
   font-size: 9px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: #21262d;
-  color: #8b949e;
-  margin-top: 2px;
+  padding: 1px 5px;
+  border-radius: 10px;
+  margin-top: 3px;
+  font-weight: 500;
 }
+.study-card__status.status-empty   { background: #21262d; color: #8b949e; }
+.study-card__status.status-toaprov { background: #1a3a2a; color: #3fb950; }
 
 /* ── Group config row ── */
 .group-row {
@@ -522,6 +541,15 @@ const PANEL_HTML = `
     </div>
   </div>
 </div>`;
+
+// Executa código no contexto da página (onde getStdPrints está definido).
+// Content scripts rodam em mundo isolado — window.getStdPrints não é acessível diretamente.
+function executeInPageContext(code) {
+  const script = document.createElement('script');
+  script.textContent = code;
+  (document.head || document.documentElement).appendChild(script);
+  script.remove();
+}
 
 // ── Panel functions ────────────────────────────────────────────────────────────
 
@@ -684,17 +712,30 @@ function renderStudies(studies) {
 
     const meta = document.createElement('div');
     meta.className = 'study-card__meta';
-    const parts = [s.modality, s.datetime, s.accessionNumber].filter(Boolean);
-    meta.textContent = parts.join(' · ') || s.description || '';
+    const parts = [s.modality, s.description, s.accessionNumber].filter(Boolean);
+    meta.textContent = parts.join(' · ');
 
     card.appendChild(name);
     card.appendChild(meta);
 
     if (s.statusClass) {
       const badge = document.createElement('span');
-      badge.className = 'study-card__status';
-      badge.textContent = s.statusClass;
+      badge.className = `study-card__status ${s.statusClass}`;
+      badge.textContent = s.statusClass === 'status-toaprov' ? 'Recebido' : 'Novo';
       card.appendChild(badge);
+    }
+
+    if (s.onclick) {
+      card.addEventListener('click', () => {
+        // Destaca card selecionado
+        studiesList.querySelectorAll('.study-card--active')
+          .forEach(c => c.classList.remove('study-card--active'));
+        card.classList.add('study-card--active');
+
+        // Abre exame no contexto da página (onde getStdPrints vive)
+        executeInPageContext(s.onclick);
+        addLog(`Abrindo exame ${s.accessionNumber} — ${s.patientName || '?'}`);
+      });
     }
 
     studiesList.appendChild(card);
