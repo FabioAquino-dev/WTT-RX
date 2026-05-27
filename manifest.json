@@ -4,7 +4,11 @@
   "version": "0.2.0",
   "description": "Diagnóstico de exames via API do sistema de radiologia — uso interno.",
 
-  "permissions": ["tabs"],
+  "permissions": ["tabs", "scripting"],
+
+  "background": {
+    "service_worker": "background.js"
+  },
 
   "host_permissions": [
     "*://*/*"

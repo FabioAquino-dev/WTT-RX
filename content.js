@@ -283,10 +283,30 @@ let _pipeline = {
 const PANEL_CSS = `<style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ── Resize handle wrapper (contains handles + panel) ── */
+#wttrx-resize-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Resize handles — 4 edges + 4 corners ── */
+.rh {
+  position: absolute;
+  z-index: 10;
+}
+.rh--n  { top: -4px;    left: 8px;    right: 8px;   height: 8px;  cursor: n-resize;  }
+.rh--s  { bottom: -4px; left: 8px;    right: 8px;   height: 8px;  cursor: s-resize;  }
+.rh--e  { top: 8px;     right: -4px;  bottom: 8px;  width: 8px;   cursor: e-resize;  }
+.rh--w  { top: 8px;     left: -4px;   bottom: 8px;  width: 8px;   cursor: w-resize;  }
+.rh--ne { top: -6px;    right: -6px;  width: 14px;  height: 14px; cursor: ne-resize; }
+.rh--nw { top: -6px;    left: -6px;   width: 14px;  height: 14px; cursor: nw-resize; }
+.rh--se { bottom: -6px; right: -6px;  width: 14px;  height: 14px; cursor: se-resize; }
+.rh--sw { bottom: -6px; left: -6px;   width: 14px;  height: 14px; cursor: sw-resize; }
+
 #wttrx-panel {
-  width: 340px;
-  max-width: 420px;
-  max-height: 85vh;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -297,13 +317,6 @@ const PANEL_CSS = `<style>
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0,0,0,.75);
   overflow: hidden;
-}
-
-/* ── Minimized strip ── */
-#wttrx-panel.wttrx-minimized {
-  width: auto;
-  min-width: 160px;
-  max-height: none;
 }
 
 /* ── Header / drag handle ── */
@@ -691,6 +704,15 @@ const PANEL_CSS = `<style>
 
 // ── Panel HTML ─────────────────────────────────────────────────────────────────
 const PANEL_HTML = `
+<div id="wttrx-resize-wrap">
+  <div class="rh rh--n"  data-dir="n"></div>
+  <div class="rh rh--s"  data-dir="s"></div>
+  <div class="rh rh--e"  data-dir="e"></div>
+  <div class="rh rh--w"  data-dir="w"></div>
+  <div class="rh rh--ne" data-dir="ne"></div>
+  <div class="rh rh--nw" data-dir="nw"></div>
+  <div class="rh rh--se" data-dir="se"></div>
+  <div class="rh rh--sw" data-dir="sw"></div>
 <div id="wttrx-panel">
   <div id="wttrx-header">
     <span class="panel-title">WTT-RX</span>
@@ -739,15 +761,19 @@ const PANEL_HTML = `
       <ul class="log-list" id="wttrx-log-list" style="display:none;"></ul>
     </div>
   </div>
+</div>
 </div>`;
 
-// Executa código no contexto da página (onde getStdPrints está definido).
-// Content scripts rodam em mundo isolado — window.getStdPrints não é acessível diretamente.
+// Executa código no contexto MAIN da página via background service worker.
+// chrome.scripting.executeScript(world:'MAIN') acessa getStdPrints/associate sem violar CSP.
 function executeInPageContext(code) {
-  const script = document.createElement('script');
-  script.textContent = code;
-  (document.head || document.documentElement).appendChild(script);
-  script.remove();
+  chrome.runtime.sendMessage({ action: 'EXEC_IN_PAGE', code }, response => {
+    if (chrome.runtime.lastError) {
+      addLog(`Exec falhou: ${chrome.runtime.lastError.message}`, 'error');
+    } else if (response && !response.ok) {
+      addLog(`Exec erro: ${response.error || '?'}`, 'error');
+    }
+  });
 }
 
 // ── Panel functions ────────────────────────────────────────────────────────────
@@ -757,11 +783,14 @@ function createPanel() {
 
   const host = document.createElement('div');
   host.id = 'wttrx-panel-host';
-  const _savedPos = _loadPanelPos();
-  const _posStyle = _savedPos
-    ? `left:${_savedPos.left}px;top:${_savedPos.top}px;`
-    : `top:20px;right:20px;`;
-  host.style.cssText = `position:fixed;${_posStyle}z-index:2147483647;`;
+  const _st    = _loadPanelState();
+  const _initW = _st?.width  ?? PANEL_DEFAULTS.width;
+  const _initH = _st?.height ?? PANEL_DEFAULTS.height;
+  const _initL = _st?.left   ?? (window.innerWidth - _initW - 20);
+  const _initT = _st?.top    ?? 20;
+  host.style.cssText =
+    `position:fixed;left:${_initL}px;top:${_initT}px;` +
+    `width:${_initW}px;height:${_initH}px;z-index:2147483647;`;
 
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = PANEL_CSS + PANEL_HTML;
@@ -820,8 +849,15 @@ function createPanel() {
   shadow.querySelector('#wttrx-btn-associate').addEventListener('click', handleAutoAssociate);
 
   makeDraggable(host, shadow.querySelector('#wttrx-header'));
+  makeResizable(host, shadow);
   updateStatus('ativo', 'Ativo');
   addLog('Painel WTT-RX iniciado');
+
+  // Restore minimized state from localStorage
+  if (_st?.minimized) {
+    _panel.savedHeight = _initH;
+    minimizePanel();
+  }
 }
 
 function removePanel() {
@@ -832,20 +868,23 @@ function removePanel() {
 
 function minimizePanel() {
   if (!_panel || _panel.minimized) return;
+  _panel.savedHeight = parseInt(_panel.host.style.height, 10) || PANEL_DEFAULTS.height;
+  _panel.host.style.height = '36px'; // header height only
   _panel.refs.body.style.display = 'none';
   _panel.minimized = true;
   _panel.refs.btnMin.textContent = '+';
   _panel.refs.btnMin.title = 'Restaurar';
-  _panel.shadow.querySelector('#wttrx-panel').classList.add('wttrx-minimized');
+  _savePanelState(_panel.host);
 }
 
 function restorePanel() {
   if (!_panel || !_panel.minimized) return;
+  _panel.host.style.height = (_panel.savedHeight ?? PANEL_DEFAULTS.height) + 'px';
   _panel.refs.body.style.display = '';
   _panel.minimized = false;
   _panel.refs.btnMin.textContent = '−';
   _panel.refs.btnMin.title = 'Minimizar';
-  _panel.shadow.querySelector('#wttrx-panel').classList.remove('wttrx-minimized');
+  _savePanelState(_panel.host);
 }
 
 function togglePanel() {
@@ -879,17 +918,34 @@ function addLog(text, type = 'info') {
   while (logList.children.length > 12) logList.removeChild(logList.lastChild);
 }
 
-function _savePanelPos(left, top) {
-  localStorage.setItem('wttrx_pos', JSON.stringify({ left, top }));
+// ── Panel state persistence ────────────────────────────────────────────────────
+
+const PANEL_DEFAULTS = { width: 340, height: 520 };
+const PANEL_MIN_W    = 280;
+const PANEL_MIN_H    = 220;
+
+function _savePanelState(host) {
+  localStorage.setItem('wttrx_state', JSON.stringify({
+    left:  parseInt(host.style.left,  10) || 0,
+    top:   parseInt(host.style.top,   10) || 0,
+    // When minimized the host is 36px tall — persist the real height instead
+    width:     parseInt(host.style.width, 10) || PANEL_DEFAULTS.width,
+    height:    _panel?.minimized
+                 ? (_panel.savedHeight ?? PANEL_DEFAULTS.height)
+                 : (parseInt(host.style.height, 10) || PANEL_DEFAULTS.height),
+    minimized: _panel?.minimized ?? false,
+  }));
 }
 
-function _loadPanelPos() {
+function _loadPanelState() {
   try {
-    const p = JSON.parse(localStorage.getItem('wttrx_pos'));
-    if (typeof p?.left === 'number' && typeof p?.top === 'number') return p;
+    const s = JSON.parse(localStorage.getItem('wttrx_state'));
+    if (s && typeof s.width === 'number') return s;
   } catch {}
   return null;
 }
+
+// ── Drag (header) ──────────────────────────────────────────────────────────────
 
 function makeDraggable(host, handle) {
   let dragging = false;
@@ -901,7 +957,6 @@ function makeDraggable(host, handle) {
     const rect = host.getBoundingClientRect();
     dragOffX = e.clientX - rect.left;
     dragOffY = e.clientY - rect.top;
-    // Switch to left/top so drag math is straightforward
     host.style.left   = rect.left + 'px';
     host.style.top    = rect.top  + 'px';
     host.style.right  = '';
@@ -920,10 +975,69 @@ function makeDraggable(host, handle) {
   document.addEventListener('mouseup', () => {
     if (!dragging) return;
     dragging = false;
-    _savePanelPos(
-      parseInt(host.style.left, 10),
-      parseInt(host.style.top,  10)
-    );
+    _savePanelState(host);
+  });
+}
+
+// ── Resize (8 handles) ─────────────────────────────────────────────────────────
+
+function makeResizable(host, shadow) {
+  shadow.querySelectorAll('.rh').forEach(handle => {
+    handle.addEventListener('mousedown', e => {
+      if (_panel?.minimized) return;  // no resize when collapsed
+      e.stopPropagation();
+      e.preventDefault();
+
+      const dir       = handle.dataset.dir;
+      const startX    = e.clientX;
+      const startY    = e.clientY;
+      const startRect = host.getBoundingClientRect();
+
+      const onMove = e => {
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const maxW = Math.floor(window.innerWidth  * 0.9);
+        const maxH = Math.floor(window.innerHeight * 0.9);
+
+        let { left, top, width, height } = {
+          left:   startRect.left,
+          top:    startRect.top,
+          width:  startRect.width,
+          height: startRect.height,
+        };
+
+        if (dir.includes('e')) {
+          width = Math.max(PANEL_MIN_W, Math.min(maxW, width + dx));
+        }
+        if (dir.includes('s')) {
+          height = Math.max(PANEL_MIN_H, Math.min(maxH, height + dy));
+        }
+        if (dir.includes('w')) {
+          const nw = Math.max(PANEL_MIN_W, Math.min(maxW, width - dx));
+          left  = left + (width - nw);
+          width = nw;
+        }
+        if (dir.includes('n')) {
+          const nh = Math.max(PANEL_MIN_H, Math.min(maxH, height - dy));
+          top    = top + (height - nh);
+          height = nh;
+        }
+
+        host.style.left   = left   + 'px';
+        host.style.top    = top    + 'px';
+        host.style.width  = width  + 'px';
+        host.style.height = height + 'px';
+      };
+
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup',   onUp);
+        _savePanelState(host);
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup',   onUp);
+    });
   });
 }
 
